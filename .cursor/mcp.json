@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "agent-handler": {
+      "url": "https://ah-api.merge.dev/mcp"
+    }
+  }
+}
