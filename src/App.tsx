@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useRef } from 'react';
 import { 
   Book, 
   PenTool, 
@@ -30,13 +30,12 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { GoogleGenAI } from "@google/genai";
 
-const COVER_STORAGE_KEY = "bookPublisherPro:coverImage";
-// KDP covers are portrait; downscale the longest side so it reliably fits in localStorage.
+// KDP covers are portrait; downscale the longest side to keep the in-memory image lightweight.
 const MAX_COVER_DIMENSION = 1000;
 
 /**
  * Reads an image file, downscales it onto a canvas, and returns a compressed
- * JPEG data URL. Keeps stored covers small enough to persist reliably.
+ * JPEG data URL. Keeps the cover lightweight while it lives in component state.
  */
 function resizeCoverImage(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -143,8 +142,8 @@ export default function App() {
   const [refinementSuggestions, setRefinementSuggestions] = useState("");
   const [isSuggestionsOpen, setIsSuggestionsOpen] = useState(false);
 
-  // Cover design state
-  const [coverImage, setCoverImage] = useState<string | null>(null); // persisted cover
+  // Cover design state (kept in memory for the session; not persisted to storage)
+  const [coverImage, setCoverImage] = useState<string | null>(null); // active saved cover
   const [coverPreview, setCoverPreview] = useState<string | null>(null); // pending/selected cover
   const [coverFileName, setCoverFileName] = useState("");
   const [isSavingCover, setIsSavingCover] = useState(false);
@@ -158,19 +157,6 @@ export default function App() {
     author: "Jane Doe",
     status: "READY_FOR_EXPORT"
   };
-
-  // Load any previously saved cover on mount.
-  useEffect(() => {
-    try {
-      const stored = localStorage.getItem(COVER_STORAGE_KEY);
-      if (stored) {
-        setCoverImage(stored);
-        setCoverPreview(stored);
-      }
-    } catch (error) {
-      console.error("Failed to load saved cover:", error);
-    }
-  }, []);
 
   const handleCoverSelect = async (file?: File | null) => {
     setCoverError("");
@@ -198,27 +184,15 @@ export default function App() {
       return;
     }
     setIsSavingCover(true);
-    // Brief delay so the saving state is visible, then persist.
+    // Brief delay so the saving state is visible, then commit the cover in memory.
     setTimeout(() => {
-      try {
-        localStorage.setItem(COVER_STORAGE_KEY, coverPreview);
-        setCoverImage(coverPreview);
-        setCoverSaved(true);
-      } catch (error) {
-        console.error("Failed to save cover:", error);
-        setCoverError("Failed to save cover. The image may be too large to store.");
-      } finally {
-        setIsSavingCover(false);
-      }
+      setCoverImage(coverPreview);
+      setCoverSaved(true);
+      setIsSavingCover(false);
     }, 600);
   };
 
   const handleRemoveCover = () => {
-    try {
-      localStorage.removeItem(COVER_STORAGE_KEY);
-    } catch (error) {
-      console.error("Failed to remove cover:", error);
-    }
     setCoverImage(null);
     setCoverPreview(null);
     setCoverFileName("");
