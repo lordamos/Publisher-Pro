@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   Book, 
   PenTool, 
@@ -21,10 +21,50 @@ import {
   Sparkles,
   Bold,
   Italic,
-  Underline
+  Underline,
+  Image as ImageIcon,
+  Save,
+  Trash2,
+  AlertTriangle
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { GoogleGenAI } from "@google/genai";
+
+const COVER_STORAGE_KEY = "bookPublisherPro:coverImage";
+// KDP covers are portrait; downscale the longest side so it reliably fits in localStorage.
+const MAX_COVER_DIMENSION = 1000;
+
+/**
+ * Reads an image file, downscales it onto a canvas, and returns a compressed
+ * JPEG data URL. Keeps stored covers small enough to persist reliably.
+ */
+function resizeCoverImage(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("Could not read file"));
+    reader.onload = () => {
+      const img = new window.Image();
+      img.onerror = () => reject(new Error("Invalid image file"));
+      img.onload = () => {
+        const scale = Math.min(1, MAX_COVER_DIMENSION / Math.max(img.width, img.height));
+        const width = Math.max(1, Math.round(img.width * scale));
+        const height = Math.max(1, Math.round(img.height * scale));
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          reject(new Error("Canvas is not supported in this browser"));
+          return;
+        }
+        ctx.drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL("image/jpeg", 0.85));
+      };
+      img.src = reader.result as string;
+    };
+    reader.readAsDataURL(file);
+  });
+}
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
@@ -37,12 +77,91 @@ export default function App() {
   const [refinementSuggestions, setRefinementSuggestions] = useState("");
   const [isSuggestionsOpen, setIsSuggestionsOpen] = useState(false);
 
+  // Cover design state
+  const [coverImage, setCoverImage] = useState<string | null>(null); // persisted cover
+  const [coverPreview, setCoverPreview] = useState<string | null>(null); // pending/selected cover
+  const [coverFileName, setCoverFileName] = useState("");
+  const [isSavingCover, setIsSavingCover] = useState(false);
+  const [coverError, setCoverError] = useState("");
+  const [coverSaved, setCoverSaved] = useState(false);
+  const coverInputRef = useRef<HTMLInputElement>(null);
+
   // Mock Data
   const book = {
     title: "The Art of Publishing",
     author: "Jane Doe",
     status: "READY_FOR_EXPORT"
   };
+
+  // Load any previously saved cover on mount.
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem(COVER_STORAGE_KEY);
+      if (stored) {
+        setCoverImage(stored);
+        setCoverPreview(stored);
+      }
+    } catch (error) {
+      console.error("Failed to load saved cover:", error);
+    }
+  }, []);
+
+  const handleCoverSelect = async (file?: File | null) => {
+    setCoverError("");
+    setCoverSaved(false);
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      setCoverError("Please choose an image file (PNG or JPG).");
+      return;
+    }
+    try {
+      const dataUrl = await resizeCoverImage(file);
+      setCoverPreview(dataUrl);
+      setCoverFileName(file.name);
+    } catch (error) {
+      console.error("Failed to process cover image:", error);
+      setCoverError("Could not process that image. Try a different file.");
+    }
+  };
+
+  const handleSaveCover = () => {
+    setCoverError("");
+    setCoverSaved(false);
+    if (!coverPreview) {
+      setCoverError("Failed to save cover: no image selected.");
+      return;
+    }
+    setIsSavingCover(true);
+    // Brief delay so the saving state is visible, then persist.
+    setTimeout(() => {
+      try {
+        localStorage.setItem(COVER_STORAGE_KEY, coverPreview);
+        setCoverImage(coverPreview);
+        setCoverSaved(true);
+      } catch (error) {
+        console.error("Failed to save cover:", error);
+        setCoverError("Failed to save cover. The image may be too large to store.");
+      } finally {
+        setIsSavingCover(false);
+      }
+    }, 600);
+  };
+
+  const handleRemoveCover = () => {
+    try {
+      localStorage.removeItem(COVER_STORAGE_KEY);
+    } catch (error) {
+      console.error("Failed to remove cover:", error);
+    }
+    setCoverImage(null);
+    setCoverPreview(null);
+    setCoverFileName("");
+    setCoverSaved(false);
+    setCoverError("");
+    if (coverInputRef.current) coverInputRef.current.value = "";
+  };
+
+  const hasUnsavedCover = coverPreview !== null && coverPreview !== coverImage;
 
   const handleExport = () => {
     setIsExporting(true);
@@ -125,6 +244,12 @@ export default function App() {
             className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${activeTab === 'editor' ? 'bg-blue-600 text-white' : 'hover:bg-slate-800'}`}
           >
             <PenTool className="h-4 w-4" /> Manuscript Editor
+          </button>
+          <button 
+            onClick={() => setActiveTab('cover')}
+            className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${activeTab === 'cover' ? 'bg-blue-600 text-white' : 'hover:bg-slate-800'}`}
+          >
+            <ImageIcon className="h-4 w-4" /> Cover Design
           </button>
           <button 
             onClick={() => setActiveTab('marketing')}
@@ -241,8 +366,24 @@ export default function App() {
                       <span className="text-slate-900 font-medium">Manuscript Drafted & Edited</span>
                     </li>
                     <li className="flex items-center gap-3 text-sm">
-                      <CheckCircle className="text-emerald-500 h-5 w-5 shrink-0" />
-                      <span className="text-slate-900 font-medium">Cover Image Optimized (1000x1600px)</span>
+                      {coverImage ? (
+                        <CheckCircle className="text-emerald-500 h-5 w-5 shrink-0" />
+                      ) : (
+                        <Circle className="text-amber-500 h-5 w-5 shrink-0" />
+                      )}
+                      <span className={`font-medium ${coverImage ? 'text-slate-900' : 'text-slate-500'}`}>
+                        Cover Image Optimized (1000x1600px)
+                      </span>
+                      {coverImage ? (
+                        <img src={coverImage} alt="Saved cover thumbnail" className="ml-auto h-10 w-auto rounded border border-slate-200 shadow-sm" />
+                      ) : (
+                        <button 
+                          onClick={() => setActiveTab('cover')}
+                          className="ml-auto text-xs font-semibold text-blue-600 hover:text-blue-700 hover:underline cursor-pointer"
+                        >
+                          Upload cover
+                        </button>
+                      )}
                     </li>
                     <li className="flex items-center gap-3 text-sm">
                       <CheckCircle className="text-emerald-500 h-5 w-5 shrink-0" />
@@ -425,6 +566,134 @@ export default function App() {
                       <div className="flex justify-between"><span>Trim:</span> <span className="font-mono font-bold">6x9 in</span></div>
                       <div className="flex justify-between"><span>Bleed:</span> <span className="font-mono font-bold">0.125 in</span></div>
                       <div className="flex justify-between"><span>Words:</span> <span className="font-mono font-bold">{text.trim() === '' ? 0 : text.trim().split(/\s+/).length}</span></div>
+                    </div>
+                  </div>
+                </div>
+              </motion.div>
+            )}
+
+            {/* COVER DESIGN TAB */}
+            {activeTab === 'cover' && (
+              <motion.div 
+                key="cover"
+                initial={{ opacity: 0, x: 20 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: -20 }}
+                className="max-w-5xl mx-auto flex flex-col md:flex-row gap-6"
+              >
+                {/* Cover Preview */}
+                <div className="flex-1 bg-white border shadow-sm rounded-xl p-6 flex flex-col items-center justify-center min-h-[500px]">
+                  {coverPreview ? (
+                    <motion.img 
+                      key={coverPreview}
+                      initial={{ opacity: 0, scale: 0.98 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      src={coverPreview}
+                      alt="Book cover preview"
+                      className="max-h-[440px] w-auto rounded-md shadow-2xl border border-slate-200 object-contain"
+                      style={{ aspectRatio: '1000 / 1600' }}
+                    />
+                  ) : (
+                    <div className="w-[275px] h-[440px] rounded-md border-2 border-dashed border-slate-300 bg-slate-50 flex flex-col items-center justify-center text-slate-400 gap-3 p-6 text-center">
+                      <ImageIcon className="h-10 w-10" />
+                      <p className="text-sm font-medium">No cover yet</p>
+                      <p className="text-xs">Upload a cover image (recommended 1000×1600px) to preview it here.</p>
+                    </div>
+                  )}
+                </div>
+
+                {/* Cover Controls */}
+                <div className="w-full md:w-80 space-y-4 shrink-0">
+                  <div className="bg-white p-5 border rounded-xl shadow-sm">
+                    <h3 className="text-lg font-bold mb-1 flex items-center gap-2">
+                      <ImageIcon className="h-5 w-5 text-blue-600" /> Book Cover
+                    </h3>
+                    <p className="text-xs text-slate-500 mb-4">Upload and save the cover that will be exported to KDP.</p>
+
+                    <input 
+                      ref={coverInputRef}
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={(e) => handleCoverSelect(e.target.files?.[0])}
+                    />
+
+                    <button 
+                      onClick={() => coverInputRef.current?.click()}
+                      className="w-full border border-slate-300 hover:border-blue-400 hover:bg-blue-50 text-slate-700 px-4 py-2.5 rounded-lg text-sm font-semibold flex items-center justify-center gap-2 transition-all cursor-pointer mb-2"
+                    >
+                      <UploadCloud className="h-4 w-4" /> {coverPreview ? 'Choose a different image' : 'Upload cover image'}
+                    </button>
+
+                    {coverFileName && (
+                      <p className="text-xs text-slate-500 truncate mb-3" title={coverFileName}>
+                        Selected: <span className="font-medium text-slate-700">{coverFileName}</span>
+                      </p>
+                    )}
+
+                    <button 
+                      onClick={handleSaveCover}
+                      disabled={isSavingCover || !coverPreview}
+                      className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 text-white px-4 py-2.5 rounded-lg text-sm font-semibold flex items-center justify-center gap-2 transition-all cursor-pointer disabled:cursor-not-allowed"
+                    >
+                      {isSavingCover ? (
+                        <><Loader2 className="h-4 w-4 animate-spin" /> Saving...</>
+                      ) : (
+                        <><Save className="h-4 w-4" /> Save Cover</>
+                      )}
+                    </button>
+
+                    {coverImage && (
+                      <button 
+                        onClick={handleRemoveCover}
+                        className="w-full mt-2 text-slate-500 hover:text-red-600 px-4 py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-2 transition-colors cursor-pointer"
+                      >
+                        <Trash2 className="h-4 w-4" /> Remove saved cover
+                      </button>
+                    )}
+
+                    <AnimatePresence>
+                      {coverError && (
+                        <motion.div 
+                          initial={{ opacity: 0, y: -6 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, y: -6 }}
+                          className="mt-3 flex items-start gap-2 text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg p-3"
+                        >
+                          <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+                          <span>{coverError}</span>
+                        </motion.div>
+                      )}
+                      {coverSaved && !hasUnsavedCover && !coverError && (
+                        <motion.div 
+                          initial={{ opacity: 0, y: -6 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, y: -6 }}
+                          className="mt-3 flex items-center gap-2 text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg p-3"
+                        >
+                          <CheckCircle className="h-4 w-4 shrink-0" />
+                          <span>Cover saved successfully.</span>
+                        </motion.div>
+                      )}
+                      {hasUnsavedCover && !coverError && (
+                        <motion.p 
+                          initial={{ opacity: 0 }}
+                          animate={{ opacity: 1 }}
+                          exit={{ opacity: 0 }}
+                          className="mt-3 text-xs text-amber-600 font-medium flex items-center gap-1.5"
+                        >
+                          <Circle className="h-3 w-3" /> Unsaved changes
+                        </motion.p>
+                      )}
+                    </AnimatePresence>
+                  </div>
+
+                  <div className="bg-white p-5 border rounded-xl shadow-sm">
+                    <h4 className="text-sm font-bold mb-2 uppercase text-slate-500 tracking-wider">Cover Specs</h4>
+                    <div className="text-xs space-y-2 text-slate-600">
+                      <div className="flex justify-between"><span>Recommended:</span> <span className="font-mono font-bold">1000×1600</span></div>
+                      <div className="flex justify-between"><span>Format:</span> <span className="font-mono font-bold">JPG / PNG</span></div>
+                      <div className="flex justify-between"><span>Status:</span> <span className={`font-mono font-bold ${coverImage ? 'text-emerald-600' : 'text-amber-600'}`}>{coverImage ? 'Saved' : 'Pending'}</span></div>
                     </div>
                   </div>
                 </div>
