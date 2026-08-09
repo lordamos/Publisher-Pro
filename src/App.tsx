@@ -66,10 +66,76 @@ function resizeCoverImage(file: File): Promise<string> {
   });
 }
 
+/** Escapes a string for safe inclusion in HTML. */
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+/**
+ * Builds a self-contained HTML "book" file: a title page (with the saved cover
+ * embedded inline when available) followed by the manuscript text. This is the
+ * real artifact produced by the "Export to KDP" action.
+ */
+function buildManuscriptHtml(
+  meta: { title: string; author: string },
+  manuscript: string,
+  cover: string | null,
+): string {
+  const wordCount = manuscript.trim() ? manuscript.trim().split(/\s+/).length : 0;
+  const paragraphs = manuscript
+    .split(/\n{2,}/)
+    .filter((block) => block.trim().length > 0)
+    .map((block) => `<p>${escapeHtml(block).replace(/\n/g, "<br/>")}</p>`)
+    .join("\n");
+  const coverPage = cover
+    ? `<section class="cover-page"><img src="${cover}" alt="Book cover" /></section>`
+    : "";
+  return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>${escapeHtml(meta.title)} — ${escapeHtml(meta.author)}</title>
+<style>
+  :root { color-scheme: light; }
+  body { font-family: Georgia, "Times New Roman", serif; color: #1e293b; margin: 0; background: #f8fafc; }
+  .page { max-width: 720px; margin: 0 auto; background: #fff; padding: 64px 72px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .cover-page { text-align: center; padding: 48px 0; page-break-after: always; }
+  .cover-page img { max-width: 320px; width: 100%; border-radius: 6px; box-shadow: 0 10px 30px rgba(0,0,0,.25); }
+  .title-page { text-align: center; padding: 96px 0; page-break-after: always; border-bottom: 1px solid #e2e8f0; }
+  .title-page h1 { font-size: 40px; margin: 0 0 12px; letter-spacing: -.5px; }
+  .title-page p { font-size: 18px; color: #475569; margin: 0; }
+  .meta { font-size: 12px; color: #94a3b8; margin-top: 32px; text-transform: uppercase; letter-spacing: 2px; }
+  .manuscript { line-height: 1.8; font-size: 18px; }
+  .manuscript p { margin: 0 0 1.1em; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+  <article class="page">
+    ${coverPage}
+    <section class="title-page">
+      <h1>${escapeHtml(meta.title)}</h1>
+      <p>by ${escapeHtml(meta.author)}</p>
+      <p class="meta">${wordCount.toLocaleString()} words</p>
+    </section>
+    <section class="manuscript">
+      ${paragraphs || "<p><em>(No manuscript content.)</em></p>"}
+    </section>
+  </article>
+</body>
+</html>`;
+}
+
 export default function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
   const [isExporting, setIsExporting] = useState(false);
   const [showSuccessToast, setShowSuccessToast] = useState(false);
+  const [showExportError, setShowExportError] = useState(false);
+  const [exportedFileName, setExportedFileName] = useState("");
   const [text, setText] = useState("Chapter 1\n\nThe blank page is the most daunting part of the publishing journey. But with Book Publisher Pro, the words seem to flow naturally, aided by AI and real-time collaboration.");
   const [preset, setPreset] = useState("professional");
   const [isGeneratingOutline, setIsGeneratingOutline] = useState(false);
@@ -165,11 +231,37 @@ export default function App() {
 
   const handleExport = () => {
     setIsExporting(true);
+    setShowSuccessToast(false);
+    setShowExportError(false);
+    // Brief delay so the "Exporting..." state is visible, then build and download a real file.
     setTimeout(() => {
-      setIsExporting(false);
-      setShowSuccessToast(true);
-      setTimeout(() => setShowSuccessToast(false), 5000);
-    }, 2500);
+      try {
+        const html = buildManuscriptHtml(book, text, coverImage);
+        const safeTitle =
+          book.title.replace(/[^a-z0-9]+/gi, "-").replace(/^-+|-+$/g, "").toLowerCase() ||
+          "manuscript";
+        const fileName = `${safeTitle}.html`;
+        const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = fileName;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+
+        setExportedFileName(fileName);
+        setIsExporting(false);
+        setShowSuccessToast(true);
+        setTimeout(() => setShowSuccessToast(false), 5000);
+      } catch (error) {
+        console.error("Export failed:", error);
+        setIsExporting(false);
+        setShowExportError(true);
+        setTimeout(() => setShowExportError(false), 5000);
+      }
+    }, 800);
   };
 
   const generateOutline = async () => {
@@ -280,8 +372,22 @@ export default function App() {
             >
               <CheckCircle className="h-5 w-5" />
               <div>
-                <p className="font-bold">Success!</p>
-                <p className="text-xs opacity-90">PDF generated and pushed to Amazon KDP API. Blockchain IP sealed.</p>
+                <p className="font-bold">Export complete!</p>
+                <p className="text-xs opacity-90">Downloaded <span className="font-mono">{exportedFileName}</span> — your book file is ready for KDP.</p>
+              </div>
+            </motion.div>
+          )}
+          {showExportError && (
+            <motion.div 
+              initial={{ opacity: 0, y: -20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -20 }}
+              className="absolute top-4 right-4 z-50 bg-red-600 text-white px-6 py-3 rounded-lg shadow-2xl flex items-center gap-3"
+            >
+              <AlertTriangle className="h-5 w-5" />
+              <div>
+                <p className="font-bold">Export failed</p>
+                <p className="text-xs opacity-90">Could not generate the book file. Please try again.</p>
               </div>
             </motion.div>
           )}
@@ -313,7 +419,7 @@ export default function App() {
                   >
                     <UploadCloud className="h-4 w-4" />
                   </motion.div>
-                  Generating PDF...
+                  Exporting...
                 </span>
               ) : (
                 <><UploadCloud className="h-4 w-4" /> Export to KDP</>
