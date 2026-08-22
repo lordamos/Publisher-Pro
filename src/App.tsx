@@ -453,9 +453,9 @@ export default function App() {
   };
 
   const copyText = async (key: string, value: string) => {
-    // Show feedback immediately so the click is always acknowledged, then copy.
+    // Mark this card as the last-copied one (persists until another card is copied),
+    // so the acknowledgement is always visible regardless of timing.
     setCopied(key);
-    setTimeout(() => setCopied(''), 2000);
     try {
       if (navigator.clipboard?.writeText) {
         await navigator.clipboard.writeText(value);
