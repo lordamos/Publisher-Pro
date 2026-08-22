@@ -453,12 +453,30 @@ export default function App() {
   };
 
   const copyText = async (key: string, value: string) => {
+    // Show feedback immediately so the click is always acknowledged, then copy.
+    setCopied(key);
+    setTimeout(() => setCopied(''), 2000);
     try {
-      await navigator.clipboard.writeText(value);
-      setCopied(key);
-      setTimeout(() => setCopied(''), 1500);
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(value);
+        return;
+      }
+      throw new Error('Clipboard API unavailable');
     } catch (error) {
-      console.error('Copy failed:', error);
+      // Fallback for restricted/unfocused contexts where the async clipboard API rejects.
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = value;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+      } catch (fallbackError) {
+        console.error('Copy failed:', fallbackError);
+      }
     }
   };
 
