@@ -215,7 +215,8 @@ def listen_once(timeout: float = 6.0) -> str | None:
 
 
 def prompt_line(force_text: bool) -> str:
-    if not force_text and sys.stdin.isatty():
+    isatty = getattr(sys.stdin, "isatty", None)
+    if not force_text and isatty and isatty():
         spoken = listen_once()
         if spoken:
             print(f"Heard: {spoken}")
@@ -382,6 +383,26 @@ def run_repl(book: BookSession, force_text: bool, printer: Callable[[str], None]
             printer(result)
 
 
+def run_batch(book: BookSession, printer: Callable[[str], None] = print) -> int:
+    printer("Book Publisher Pro — Voice Studio (piped input)")
+    for raw in sys.stdin:
+        line = raw.strip()
+        if not line:
+            continue
+        printer(f"> {line}")
+        try:
+            result = handle_command(book, line)
+        except Exception as exc:  # noqa: BLE001
+            printer(f"Error: {exc}")
+            continue
+        if result == "__QUIT__":
+            printer("Goodbye.")
+            return 0
+        if result:
+            printer(result)
+    return 0
+
+
 def run_demo(book: BookSession, output_dir: Path) -> int:
     steps = [
         "/title Voice Studio Smoke Test",
@@ -474,9 +495,9 @@ def main(argv: list[str] | None = None) -> int:
     book = load_manuscript(args.manuscript) if args.manuscript else BookSession()
     if args.demo:
         return run_demo(book, args.save_dir)
-    if not sys.stdin.isatty():
-        print("No TTY detected. Use --demo for a smoke test, or run from a terminal.")
-        return 2
+    isatty = getattr(sys.stdin, "isatty", None)
+    if not (isatty and isatty()):
+        return run_batch(book)
     return run_repl(book, force_text=args.text)
 
 

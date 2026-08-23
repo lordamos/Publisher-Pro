@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import io
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import run_voice
 
@@ -49,6 +51,12 @@ class BookSessionTests(unittest.TestCase):
         self.assertEqual(book.title, "Loaded")
         self.assertEqual(book.author, "Sam")
         self.assertEqual(book.chapters[0].body, "Hello world")
+
+    def test_piped_session_exits_cleanly(self) -> None:
+        script = "/title Piped Book\nHello from a pipe.\n/status\n/quit\n"
+        with patch("sys.stdin", io.StringIO(script)):
+            code = run_voice.main([])
+        self.assertEqual(code, 0)
 
 
 if __name__ == "__main__":
