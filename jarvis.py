@@ -239,6 +239,8 @@ def list_audio_devices() -> str:
         devices = sd.query_devices()
     except Exception as exc:  # noqa: BLE001
         return f"Could not query devices: {exc}"
+    if not devices:
+        lines.append("  (none found — text mode still works)")
     for index, device in enumerate(devices):
         kind = []
         if device.get("max_input_channels", 0) > 0:
