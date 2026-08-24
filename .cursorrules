@@ -1,0 +1,15 @@
+## Merge CLI
+
+For any task involving third-party services, use the `merge` CLI.
+
+### Commands
+
+- `merge search-tools "<intent>"` — Search for tools (returns compact schemas)
+- `merge execute-tool <tool_name> '<json_params>'` — Execute a tool
+
+### Workflow
+
+1. Search for ALL tools you need in parallel: run multiple `merge search-tools` calls simultaneously.
+2. Execute lookups in parallel, then execute the main tool.
+
+Always search before executing. Never guess tool names. Pass null for optional params.
