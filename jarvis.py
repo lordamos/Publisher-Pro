@@ -1,43 +1,45 @@
 #!/usr/bin/env python3
-"""Jarvis — personal assistant for Book Publisher Pro.
+"""Jarvis workspace — voice-capable personal assistant for Book Publisher Pro.
 
-Activate a virtual environment, then start a session:
+Dependencies (see requirements.txt):
+  sounddevice, numpy, requests, python-dotenv
 
-  Windows:
-    python -m venv .venv
-    .\\.venv\\Scripts\\activate
-    pip install -r requirements-jarvis.txt
-    python jarvis.py
-
-  macOS / Linux:
-    python3 -m venv .venv
-    source .venv/bin/activate
-    pip install -r requirements-jarvis.txt
-    python jarvis.py
-
-This cloud/Linux runner has no microphone. Typed input is the default.
-If SpeechRecognition + a microphone are available locally, spoken lines
-are transcribed automatically. pyttsx3 is used for read-back when installed.
+Quick start:
+  python3 -m venv .venv
+  source .venv/bin/activate          # Windows: .\\.venv\\Scripts\\activate
+  pip install -r requirements.txt
+  cp .env.example .env               # then edit keys
+  python jarvis.py                   # interactive (text if no mic)
+  python jarvis.py --voice           # mic + speakers when available
+  python jarvis.py --demo            # non-interactive smoke test
 """
 
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import os
 import re
-import shutil
+import struct
 import sys
-import traceback
+import wave
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Any
 
-GEMINI_MODEL = "gemini-3-flash-preview"
-GEMINI_FALLBACK_MODEL = "gemini-2.5-flash"
+import numpy as np
+import requests
+from dotenv import load_dotenv
+
+GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_FALLBACK_MODEL = "gemini-2.0-flash"
+GEMINI_URL = (
+    "https://generativelanguage.googleapis.com/v1beta/models/"
+    "{model}:generateContent"
+)
 DEFAULT_SAVE_DIR = Path("jarvis_sessions")
-ENV_FILES = (".env.local", ".env")
 WAKE_PATTERNS = (
     r"^hey\s+jarvis[,\s:]+",
     r"^ok(?:ay)?\s+jarvis[,\s:]+",
@@ -63,7 +65,7 @@ HELP_TEXT = (
     "  /help                 Show this list\n"
     "  /status               Session and manuscript stats\n"
     "  /time                 Current date and time\n"
-    "  /ask <question>       Ask Jarvis (uses Gemini when configured)\n"
+    "  /ask <question>       Ask Jarvis (Gemini or OpenAI when configured)\n"
     "  /note <text>          Store a reminder\n"
     "  /notes                List reminders\n"
     "  /title <name>         Set book title\n"
@@ -77,10 +79,16 @@ HELP_TEXT = (
     "  /refine               Get AI editing notes\n"
     "  /save [path]          Save markdown or JSON\n"
     "  /export [path]        Export the full manuscript\n"
+    "  /devices              List sounddevice input/output devices\n"
     "  /quit                 Exit\n"
     "You can also speak naturally: \"Jarvis, what time is it?\" "
     "or \"remember the deadline is Friday\"."
 )
+
+
+# ---------------------------------------------------------------------------
+# Domain models
+# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -127,7 +135,7 @@ class BookSession:
             lines.extend(["", f"## {chapter.title}", "", chapter.body.rstrip(), ""])
         return "\n".join(lines).rstrip() + "\n"
 
-    def to_json(self) -> dict:
+    def to_json(self) -> dict[str, Any]:
         return {
             "title": self.title,
             "author": self.author,
@@ -144,133 +152,348 @@ class JarvisSession:
     history: list[tuple[str, str]] = field(default_factory=list)
 
 
-def load_env_files(root: Path | None = None) -> None:
-    base = root or Path.cwd()
-    for name in ENV_FILES:
-        path = base / name
-        if not path.is_file():
-            continue
-        for raw in path.read_text(encoding="utf-8").splitlines():
-            line = raw.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, value = line.split("=", 1)
-            key = key.strip()
-            value = value.strip().strip('"').strip("'")
-            if key and key not in os.environ:
-                os.environ[key] = value
+# ---------------------------------------------------------------------------
+# Config / env
+# ---------------------------------------------------------------------------
+
+
+def load_env(root: Path | None = None) -> None:
+    """Load `.env` then `.env.local` from the project root (local wins)."""
+    base = root or Path(__file__).resolve().parent
+    load_dotenv(base / ".env", override=False)
+    load_dotenv(base / ".env.local", override=True)
+
+
+def _env(name: str, default: str = "") -> str:
+    return (os.environ.get(name) or default).strip()
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = _env(name)
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def _is_placeholder(value: str) -> bool:
+    lowered = value.lower()
+    return (
+        not value
+        or value.startswith("your_")
+        or value.startswith("MY_")
+        or "placeholder" in lowered
+        or value in {"changeme", "xxx", "sk-..."}
+    )
 
 
 def gemini_api_key() -> str | None:
-    key = (os.environ.get("GEMINI_API_KEY") or "").strip()
-    if not key or key in {"MY_GEMINI_API_KEY", "your_api_key_here"}:
+    key = _env("GEMINI_API_KEY")
+    if _is_placeholder(key):
         return None
     return key
 
 
-def generate_with_gemini(prompt: str, system: str) -> str:
+def openai_api_key() -> str | None:
+    key = _env("OPENAI_API_KEY")
+    if _is_placeholder(key):
+        return None
+    return key
+
+
+def openai_base_url() -> str:
+    return _env("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
+
+
+# ---------------------------------------------------------------------------
+# Audio (sounddevice + numpy)
+# ---------------------------------------------------------------------------
+
+
+def audio_defaults() -> tuple[int, int, float]:
+    rate = _env_int("JARVIS_SAMPLE_RATE", 16000)
+    channels = _env_int("JARVIS_CHANNELS", 1)
+    seconds = float(_env("JARVIS_RECORD_SECONDS") or "5")
+    return rate, channels, seconds
+
+
+def _device_arg(name: str) -> int | str | None:
+    raw = _env(name)
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return raw
+
+
+def list_audio_devices() -> str:
+    try:
+        import sounddevice as sd
+    except Exception as exc:  # noqa: BLE001
+        return f"sounddevice unavailable: {exc}"
+    lines = ["Audio devices (sounddevice):"]
+    try:
+        devices = sd.query_devices()
+    except Exception as exc:  # noqa: BLE001
+        return f"Could not query devices: {exc}"
+    for index, device in enumerate(devices):
+        kind = []
+        if device.get("max_input_channels", 0) > 0:
+            kind.append("in")
+        if device.get("max_output_channels", 0) > 0:
+            kind.append("out")
+        lines.append(
+            f"  [{index}] {device.get('name', '?')} "
+            f"({'/'.join(kind) or 'n/a'}, {device.get('default_samplerate', '?')} Hz)"
+        )
+    return "\n".join(lines)
+
+
+def record_audio(seconds: float | None = None) -> tuple[np.ndarray, int]:
+    """Record mono float32 audio from the default (or configured) input device."""
+    import sounddevice as sd
+
+    rate, channels, default_seconds = audio_defaults()
+    duration = float(seconds if seconds is not None else default_seconds)
+    device = _device_arg("JARVIS_INPUT_DEVICE")
+    frames = int(duration * rate)
+    recording = sd.rec(
+        frames,
+        samplerate=rate,
+        channels=channels,
+        dtype="float32",
+        device=device,
+    )
+    sd.wait()
+    return np.asarray(recording, dtype=np.float32), rate
+
+
+def float_to_wav_bytes(audio: np.ndarray, sample_rate: int) -> bytes:
+    """Encode float32 [-1, 1] audio as 16-bit PCM WAV bytes."""
+    mono = audio
+    if mono.ndim > 1:
+        mono = mono.mean(axis=1)
+    clipped = np.clip(mono, -1.0, 1.0)
+    pcm = (clipped * 32767.0).astype(np.int16)
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(sample_rate)
+        wav.writeframes(pcm.tobytes())
+    return buffer.getvalue()
+
+
+def play_audio(audio: np.ndarray, sample_rate: int) -> None:
+    import sounddevice as sd
+
+    device = _device_arg("JARVIS_OUTPUT_DEVICE")
+    sd.play(audio, samplerate=sample_rate, device=device)
+    sd.wait()
+
+
+def play_wav_bytes(data: bytes) -> None:
+    with wave.open(io.BytesIO(data), "rb") as wav:
+        channels = wav.getnchannels()
+        sample_width = wav.getsampwidth()
+        rate = wav.getframerate()
+        frames = wav.readframes(wav.getnframes())
+    if sample_width == 2:
+        fmt = f"<{len(frames) // 2}h"
+        ints = struct.unpack(fmt, frames)
+        audio = np.asarray(ints, dtype=np.float32) / 32768.0
+    else:
+        audio = np.frombuffer(frames, dtype=np.uint8).astype(np.float32)
+        audio = (audio - 128.0) / 128.0
+    if channels > 1:
+        audio = audio.reshape(-1, channels)
+    play_audio(audio, rate)
+
+
+# ---------------------------------------------------------------------------
+# AI backends (requests)
+# ---------------------------------------------------------------------------
+
+
+def _gemini_generate(prompt: str, system: str) -> str:
     key = gemini_api_key()
     if not key:
         raise RuntimeError(
-            "GEMINI_API_KEY is not set. Copy .env.example to .env.local and add your key."
+            "GEMINI_API_KEY is not set. Add it to .env (see .env.example)."
         )
-    try:
-        from google import genai
-        from google.genai import types
-    except ImportError as exc:
-        raise RuntimeError(
-            "google-genai is not installed. Run: pip install -r requirements-jarvis.txt"
-        ) from exc
-
-    client = genai.Client(api_key=key)
     last_error: Exception | None = None
+    body = {
+        "system_instruction": {"parts": [{"text": system}]},
+        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+    }
     for model in (GEMINI_MODEL, GEMINI_FALLBACK_MODEL):
+        url = GEMINI_URL.format(model=model)
         try:
-            response = client.models.generate_content(
-                model=model,
-                contents=prompt,
-                config=types.GenerateContentConfig(system_instruction=system),
+            response = requests.post(
+                url,
+                params={"key": key},
+                headers={"Content-Type": "application/json"},
+                json=body,
+                timeout=60,
             )
-            text = (getattr(response, "text", None) or "").strip()
+            if response.status_code >= 400:
+                last_error = RuntimeError(
+                    f"{model} HTTP {response.status_code}: {response.text[:300]}"
+                )
+                continue
+            payload = response.json()
+            parts = (
+                payload.get("candidates", [{}])[0]
+                .get("content", {})
+                .get("parts", [])
+            )
+            text = "".join(part.get("text", "") for part in parts).strip()
             if text:
                 return text
-        except Exception as exc:  # noqa: BLE001 - surface Gemini/transport errors
+            last_error = RuntimeError(f"{model} returned empty text")
+        except requests.RequestException as exc:
             last_error = exc
     raise RuntimeError(f"Gemini request failed: {last_error}") from last_error
 
 
-def speak(text: str) -> str:
-    """Read text aloud when a TTS engine is available; always echo to stdout."""
+def _openai_chat(prompt: str, system: str) -> str:
+    key = openai_api_key()
+    if not key:
+        raise RuntimeError("OPENAI_API_KEY is not set.")
+    model = _env("OPENAI_CHAT_MODEL", "gpt-4o-mini")
+    response = requests.post(
+        f"{openai_base_url()}/chat/completions",
+        headers={
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": 0.7,
+        },
+        timeout=60,
+    )
+    if response.status_code >= 400:
+        raise RuntimeError(f"OpenAI HTTP {response.status_code}: {response.text[:300]}")
+    payload = response.json()
+    return (
+        payload.get("choices", [{}])[0]
+        .get("message", {})
+        .get("content", "")
+        .strip()
+    )
+
+
+def generate_reply(prompt: str, system: str) -> str:
+    """Prefer Gemini when configured, otherwise OpenAI chat."""
+    if gemini_api_key():
+        return _gemini_generate(prompt, system)
+    if openai_api_key():
+        return _openai_chat(prompt, system)
+    raise RuntimeError(
+        "No AI key configured. Set GEMINI_API_KEY or OPENAI_API_KEY in .env."
+    )
+
+
+def transcribe_wav(wav_bytes: bytes) -> str:
+    key = openai_api_key()
+    if not key:
+        raise RuntimeError(
+            "Voice transcription needs OPENAI_API_KEY for Whisper. "
+            "Use typed input or --text mode instead."
+        )
+    model = _env("OPENAI_WHISPER_MODEL", "whisper-1")
+    response = requests.post(
+        f"{openai_base_url()}/audio/transcriptions",
+        headers={"Authorization": f"Bearer {key}"},
+        files={"file": ("speech.wav", wav_bytes, "audio/wav")},
+        data={"model": model},
+        timeout=90,
+    )
+    if response.status_code >= 400:
+        raise RuntimeError(
+            f"Whisper HTTP {response.status_code}: {response.text[:300]}"
+        )
+    return (response.json().get("text") or "").strip()
+
+
+def synthesize_speech(text: str) -> bytes:
+    key = openai_api_key()
+    if not key:
+        raise RuntimeError("TTS needs OPENAI_API_KEY.")
+    model = _env("OPENAI_TTS_MODEL", "gpt-4o-mini-tts")
+    voice = _env("OPENAI_TTS_VOICE", "alloy")
+    response = requests.post(
+        f"{openai_base_url()}/audio/speech",
+        headers={
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": model,
+            "voice": voice,
+            "input": text[:4000],
+            "response_format": "wav",
+        },
+        timeout=90,
+    )
+    if response.status_code >= 400:
+        raise RuntimeError(f"TTS HTTP {response.status_code}: {response.text[:300]}")
+    return response.content
+
+
+# ---------------------------------------------------------------------------
+# Speech helpers
+# ---------------------------------------------------------------------------
+
+
+def speak(text: str, *, voice: bool = False) -> str:
     cleaned = text.strip()
     if not cleaned:
         return "Nothing to read."
     print("\n[VOICE]\n" + cleaned + "\n")
+    if not voice:
+        return "Printed voice line (voice mode off)."
     try:
-        import pyttsx3
-
-        engine = pyttsx3.init()
-        engine.say(cleaned)
-        engine.runAndWait()
-        return "Read aloud with pyttsx3."
-    except Exception:
-        if sys.platform == "win32":
-            try:
-                import subprocess
-
-                escaped = cleaned.replace("'", "''")
-                subprocess.run(
-                    [
-                        "powershell",
-                        "-NoProfile",
-                        "-Command",
-                        (
-                            "Add-Type -AssemblyName System.Speech; "
-                            "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
-                            f"$s.Speak('{escaped[:4000]}')"
-                        ),
-                    ],
-                    check=False,
-                    capture_output=True,
-                    text=True,
-                )
-                return "Read aloud with Windows SAPI."
-            except Exception:
-                pass
-        if shutil.which("espeak-ng") or shutil.which("espeak"):
-            binary = shutil.which("espeak-ng") or shutil.which("espeak")
-            try:
-                import subprocess
-
-                subprocess.run([binary, cleaned[:4000]], check=False)
-                return f"Read aloud with {Path(binary).name}."
-            except Exception:
-                pass
-    return "Printed voice line (no TTS engine installed)."
+        wav = synthesize_speech(cleaned)
+        play_wav_bytes(wav)
+        return "Read aloud with OpenAI TTS + sounddevice."
+    except Exception as exc:  # noqa: BLE001
+        return f"Printed voice line (TTS unavailable: {exc})."
 
 
-def listen_once(timeout: float = 6.0) -> str | None:
-    """Capture one spoken line when a microphone stack is installed."""
-    try:
-        import speech_recognition as sr
-    except ImportError:
+def listen_once(*, voice: bool, seconds: float | None = None) -> str | None:
+    if not voice:
         return None
-    recognizer = sr.Recognizer()
     try:
-        with sr.Microphone() as source:
-            print("Listening…")
-            recognizer.adjust_for_ambient_noise(source, duration=0.4)
-            audio = recognizer.listen(source, timeout=timeout, phrase_time_limit=12)
-        return recognizer.recognize_google(audio)
-    except Exception:
+        print("Listening…")
+        audio, rate = record_audio(seconds)
+        rms = float(np.sqrt(np.mean(np.square(audio)))) if audio.size else 0.0
+        if rms < 1e-4:
+            print("No speech detected (silent mic).")
+            return None
+        wav_bytes = float_to_wav_bytes(audio, rate)
+        text = transcribe_wav(wav_bytes)
+        if text:
+            print(f"Heard: {text}")
+        return text or None
+    except Exception as exc:  # noqa: BLE001
+        print(f"Listen failed: {exc}")
         return None
 
 
-def prompt_line(force_text: bool) -> str:
+def prompt_line(*, force_text: bool, voice: bool) -> str:
     isatty = getattr(sys.stdin, "isatty", None)
-    if not force_text and isatty and isatty():
-        spoken = listen_once()
+    if not force_text and voice and isatty and isatty():
+        spoken = listen_once(voice=True)
         if spoken:
-            print(f"Heard: {spoken}")
             return spoken
     try:
         return input("jarvis> ").strip()
@@ -278,10 +501,17 @@ def prompt_line(force_text: bool) -> str:
         return "/quit"
 
 
+# ---------------------------------------------------------------------------
+# Manuscript I/O
+# ---------------------------------------------------------------------------
+
+
 def save_session(book: BookSession, destination: Path) -> Path:
     destination.parent.mkdir(parents=True, exist_ok=True)
     if destination.suffix.lower() == ".json":
-        destination.write_text(json.dumps(book.to_json(), indent=2), encoding="utf-8")
+        destination.write_text(
+            json.dumps(book.to_json(), indent=2), encoding="utf-8"
+        )
     else:
         if destination.suffix.lower() not in {".md", ".markdown", ".txt"}:
             destination = destination.with_suffix(".md")
@@ -291,395 +521,351 @@ def save_session(book: BookSession, destination: Path) -> Path:
 
 def default_export_path(book: BookSession, suffix: str = ".md") -> Path:
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    slug = "".join(ch.lower() if ch.isalnum() else "-" for ch in book.title).strip("-")
+    slug = "".join(ch.lower() if ch.isalnum() else "-" for ch in book.title).strip(
+        "-"
+    )
     slug = slug or "manuscript"
     return DEFAULT_SAVE_DIR / f"{slug}-{stamp}{suffix}"
-
-
-def now_display(moment: datetime | None = None) -> str:
-    stamp = moment or datetime.now(timezone.utc)
-    return stamp.strftime("%A, %B %d, %Y — %H:%M UTC")
-
-
-def strip_wake_word(raw: str) -> str:
-    text = raw.strip()
-    lowered = text.lower()
-    if lowered in {"jarvis", "hey jarvis", "ok jarvis", "okay jarvis"}:
-        return ""
-    for pattern in WAKE_PATTERNS:
-        updated = re.sub(pattern, "", text, count=1, flags=re.IGNORECASE)
-        if updated != text:
-            return updated.strip()
-    return text
-
-
-def status_line(session: JarvisSession) -> str:
-    book = session.book
-    chapter = book.ensure_chapter()
-    notes = f"{len(session.notes)} note(s)"
-    return (
-        f"{book.title} by {book.author} — "
-        f"{len(book.chapters)} chapter(s), {book.word_count()} words. "
-        f"Current: {chapter.title}. {notes}."
-    )
-
-
-def handle_slash(session: JarvisSession, command: str, argument: str) -> str:
-    book = session.book
-
-    if command in {"help", "h", "?"}:
-        return HELP_TEXT
-
-    if command == "status":
-        return status_line(session)
-
-    if command in {"time", "date"}:
-        return f"It is {now_display()}."
-
-    if command in {"note", "remember"}:
-        if not argument:
-            return "Usage: /note <text>"
-        session.notes.append(argument)
-        return f"Noted ({len(session.notes)} stored)."
-
-    if command == "notes":
-        if not session.notes:
-            return "No notes yet. Say \"remember …\" or use /note."
-        return "\n".join(f"{index}. {note}" for index, note in enumerate(session.notes, start=1))
-
-    if command == "ask":
-        if not argument:
-            return "Usage: /ask <question>"
-        return ask_jarvis(session, argument)
-
-    if command == "title":
-        if not argument:
-            return f"Title is currently: {book.title}"
-        book.title = argument
-        return f"Title set to {book.title}."
-
-    if command == "author":
-        if not argument:
-            return f"Author is currently: {book.author}"
-        book.author = argument
-        return f"Author set to {book.author}."
-
-    if command == "chapter":
-        title = argument or f"Chapter {len(book.chapters) + 1}"
-        book.chapters.append(Chapter(title=title))
-        book.current = len(book.chapters) - 1
-        return f"Started {title}."
-
-    if command == "use":
-        if not argument.isdigit():
-            return "Usage: /use <chapter-number>"
-        index = int(argument) - 1
-        if index < 0 or index >= len(book.chapters):
-            return "That chapter does not exist. Use /list."
-        book.current = index
-        return f"Now editing {book.chapters[index].title}."
-
-    if command == "list":
-        if not book.chapters:
-            return "No chapters yet. Dictate with /dictate or start /chapter."
-        rows = []
-        for index, chapter in enumerate(book.chapters, start=1):
-            marker = "*" if index - 1 == book.current else " "
-            count = len(chapter.body.split()) if chapter.body.strip() else 0
-            rows.append(f"{marker} {index}. {chapter.title} ({count} words)")
-        return "\n".join(rows)
-
-    if command in {"dictate", "write"}:
-        if not argument:
-            return "Usage: /dictate <text>"
-        chapter = book.ensure_chapter()
-        chapter.body = (chapter.body + ("\n" if chapter.body else "") + argument).strip()
-        return f"Dictated {len(argument.split())} words into {chapter.title}."
-
-    if command == "read":
-        chapter = book.ensure_chapter()
-        payload = f"{chapter.title}. {chapter.body}".strip()
-        return speak(payload)
-
-    if command == "outline":
-        chapter = book.ensure_chapter()
-        outline = generate_with_gemini(
-            (
-                f'Generate a professional book outline for "{book.title}" by {book.author}. '
-                "Provide chapters with brief descriptions."
-            ),
-            "You are a professional book editor and strategist. "
-            "Create clear, compelling, and structured book outlines.",
-        )
-        book.chapters.append(Chapter(title="Book Outline", body=outline))
-        book.current = len(book.chapters) - 1
-        return f"Added Book Outline ({len(outline.split())} words)."
-
-    if command == "refine":
-        chapter = book.ensure_chapter()
-        if not chapter.body.strip():
-            return "Dictate some text first, then run /refine."
-        notes = generate_with_gemini(
-            (
-                "Proofread and provide editing suggestions. Focus on grammar, flow, and tone. "
-                f"Keep the notes concise.\n\nManuscript:\n{chapter.body}"
-            ),
-            "You are an expert book editor. Provide constructive, professional feedback.",
-        )
-        return "AI suggestions:\n" + notes
-
-    if command in {"save", "export"}:
-        path = Path(argument) if argument else default_export_path(book)
-        written = save_session(book, path)
-        return f"Wrote {written.resolve()}"
-
-    if command in {"quit", "exit", "q"}:
-        return "__QUIT__"
-
-    return f"Unknown command /{command}. Try /help."
-
-
-def ask_jarvis(session: JarvisSession, question: str) -> str:
-    book = session.book
-    notes = "; ".join(session.notes) if session.notes else "none"
-    try:
-        return generate_with_gemini(
-            question,
-            (
-                "You are Jarvis, a concise personal assistant for Book Publisher Pro. "
-                "Answer clearly in a few sentences. "
-                f"Current manuscript: {book.title} by {book.author}, "
-                f"{book.word_count()} words. Notes: {notes}."
-            ),
-        )
-    except RuntimeError as exc:
-        return (
-            f"I heard you, but I cannot answer conversationally yet: {exc} "
-            "I can still take notes, dictate, and manage the manuscript. Try /help."
-        )
-
-
-def handle_natural(session: JarvisSession, text: str) -> str:
-    lowered = re.sub(r"[?!.,]+$", "", text.lower()).strip()
-
-    if lowered in QUIT_PHRASES:
-        return "__QUIT__"
-
-    if lowered in {"help", "what can you do", "commands", "list commands"}:
-        return handle_slash(session, "help", "")
-
-    if re.search(r"\b(time|date|day)\b", lowered) and re.search(
-        r"\b(what|what'?s|tell|current|now)\b", lowered
-    ):
-        return handle_slash(session, "time", "")
-    if lowered in {"time", "date", "what time is it", "what's the time", "whats the time"}:
-        return handle_slash(session, "time", "")
-
-    if lowered in {"status", "how are we doing", "session"}:
-        return handle_slash(session, "status", "")
-
-    if lowered in {"notes", "show notes", "list notes"}:
-        return handle_slash(session, "notes", "")
-
-    note_match = re.match(
-        r"^(?:remember(?:\s+that)?|note(?:\s+that)?|make a note(?:\s+that)?)\s+(.+)$",
-        text,
-        flags=re.IGNORECASE,
-    )
-    if note_match:
-        return handle_slash(session, "note", note_match.group(1).strip())
-
-    dictate_match = re.match(
-        r"^(?:dictate|write(?:\s+this)?|take this down)[:\s]+(.+)$",
-        text,
-        flags=re.IGNORECASE,
-    )
-    if dictate_match:
-        return handle_slash(session, "dictate", dictate_match.group(1).strip())
-
-    if re.search(r"\b(read(?:\s+it)?|read(?:\s+the)?\s+chapter|speak(?:\s+it)?)\b", lowered):
-        return handle_slash(session, "read", "")
-
-    if re.search(r"\boutline\b", lowered):
-        return handle_slash(session, "outline", "")
-
-    if re.search(r"\b(refine|proofread|edit(?:ing)? notes)\b", lowered):
-        return handle_slash(session, "refine", "")
-
-    if re.search(r"\b(export|save(?:\s+the)?\s+manuscript|save(?:\s+it)?)\b", lowered):
-        return handle_slash(session, "export", "")
-
-    return ask_jarvis(session, text)
-
-
-def handle_turn(session: JarvisSession, raw: str) -> str:
-    line = strip_wake_word(raw)
-    if raw.strip() and not line:
-        return "Yes? How may I help?"
-    if not line:
-        return ""
-    if line.startswith("/"):
-        parts = line[1:].split(maxsplit=1)
-        command = parts[0].lower()
-        argument = parts[1].strip() if len(parts) > 1 else ""
-        return handle_slash(session, command, argument)
-    return handle_natural(session, line)
-
-
-def run_repl(session: JarvisSession, force_text: bool, printer: Callable[[str], None] = print) -> int:
-    printer("Jarvis online. Book Publisher Pro assistant ready.")
-    printer("Type /help for commands, or speak naturally. Prefix with Jarvis if you like.")
-    printer(handle_turn(session, "/status"))
-    while True:
-        raw = prompt_line(force_text)
-        try:
-            result = handle_turn(session, raw)
-        except Exception as exc:  # noqa: BLE001
-            printer(f"Error: {exc}")
-            continue
-        if result == "__QUIT__":
-            printer("Standing down. Goodbye.")
-            return 0
-        if result:
-            printer(result)
-            session.history.append((raw, result))
-
-
-def run_batch(session: JarvisSession, printer: Callable[[str], None] = print) -> int:
-    printer("Jarvis online (piped input).")
-    for raw in sys.stdin:
-        line = raw.strip()
-        if not line:
-            continue
-        printer(f"> {line}")
-        try:
-            result = handle_turn(session, line)
-        except Exception as exc:  # noqa: BLE001
-            printer(f"Error: {exc}")
-            continue
-        if result == "__QUIT__":
-            printer("Standing down. Goodbye.")
-            return 0
-        if result:
-            printer(result)
-            session.history.append((line, result))
-    return 0
-
-
-def run_demo(session: JarvisSession, output_dir: Path) -> int:
-    steps = [
-        "Jarvis",
-        "what time is it?",
-        "/help",
-        "remember the working title is Midnight Typesetter",
-        "/title Midnight Typesetter",
-        "/author Publisher Pro",
-        "/chapter Opening Page",
-        "dictate: The blank page is the most daunting part of the publishing journey.",
-        "dictate: With Jarvis at the desk, the words seem to flow naturally.",
-        "/list",
-        "/status",
-        "/notes",
-        "/read",
-    ]
-    for step in steps:
-        print(f"> {step}")
-        result = handle_turn(session, step)
-        if result == "__QUIT__":
-            raise AssertionError("Demo should not quit early")
-        if result:
-            print(result)
-    export_path = output_dir / "demo-manuscript.md"
-    saved = handle_turn(session, f"/export {export_path}")
-    print(saved)
-    markdown = export_path.read_text(encoding="utf-8")
-    required = (
-        "# Midnight Typesetter",
-        "*by Publisher Pro*",
-        "## Opening Page",
-        "blank page",
-        "Jarvis at the desk",
-    )
-    missing = [item for item in required if item not in markdown]
-    if missing:
-        raise AssertionError(f"Demo export missing {missing}:\n{markdown}")
-    if session.book.word_count() < 10:
-        raise AssertionError(f"Expected dictated words, got {session.book.word_count()}")
-    if not any("Midnight Typesetter" in note for note in session.notes):
-        raise AssertionError(f"Expected working-title note, got {session.notes}")
-    print("DEMO_OK")
-    return 0
-
-
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Jarvis assistant for Book Publisher Pro (conversation, notes, manuscript)."
-    )
-    parser.add_argument(
-        "--text",
-        action="store_true",
-        help="Force typed input even if a microphone is available.",
-    )
-    parser.add_argument(
-        "--demo",
-        action="store_true",
-        help="Run a non-interactive smoke test and exit.",
-    )
-    parser.add_argument(
-        "--manuscript",
-        type=Path,
-        help="Load an existing markdown or JSON manuscript first.",
-    )
-    parser.add_argument(
-        "--save-dir",
-        type=Path,
-        default=DEFAULT_SAVE_DIR,
-        help="Directory used for default exports (default: jarvis_sessions).",
-    )
-    return parser
 
 
 def load_manuscript(path: Path) -> BookSession:
     text = path.read_text(encoding="utf-8")
     if path.suffix.lower() == ".json":
         data = json.loads(text)
+        chapters = [
+            Chapter(title=c.get("title", f"Chapter {i}"), body=c.get("body", ""))
+            for i, c in enumerate(data.get("chapters", []), start=1)
+        ]
         book = BookSession(
-            title=data.get("title", "Untitled Manuscript"),
-            author=data.get("author", "Unknown Author"),
-            current=int(data.get("current") or 0),
+            title=data.get("title", "Untitled"),
+            author=data.get("author", "Unknown"),
+            chapters=chapters or [Chapter(title="Chapter 1")],
+            current=int(data.get("current", 0)),
         )
-        for item in data.get("chapters") or []:
-            book.chapters.append(
-                Chapter(title=item.get("title", "Chapter"), body=item.get("body", ""))
-            )
         book.ensure_chapter()
         return book
-    book = BookSession(title=path.stem.replace("-", " ").title(), author="Unknown Author")
-    book.chapters.append(Chapter(title="Imported", body=text))
+    # Minimal markdown loader: first H1 = title, H2s = chapters
+    title = "Untitled"
+    author = "Unknown"
+    chapters: list[Chapter] = []
+    current: Chapter | None = None
+    for line in text.splitlines():
+        if line.startswith("# ") and title == "Untitled":
+            title = line[2:].strip() or title
+        elif line.startswith("*by ") and line.endswith("*"):
+            author = line[4:-1].strip() or author
+        elif line.startswith("## ") and line.strip() != "## Contents":
+            if current is not None:
+                chapters.append(current)
+            current = Chapter(title=line[3:].strip() or f"Chapter {len(chapters)+1}")
+        elif current is not None:
+            current.body += line + "\n"
+    if current is not None:
+        chapters.append(current)
+    book = BookSession(
+        title=title,
+        author=author,
+        chapters=chapters or [Chapter(title="Chapter 1")],
+    )
+    book.ensure_chapter()
     return book
 
 
+def now_display(moment: datetime | None = None) -> str:
+    moment = moment or datetime.now(timezone.utc)
+    return moment.strftime("%A, %B %d, %Y at %H:%M:%S UTC")
+
+
+# ---------------------------------------------------------------------------
+# Command handling
+# ---------------------------------------------------------------------------
+
+
+def strip_wake_word(text: str) -> str:
+    cleaned = text.strip()
+    for pattern in WAKE_PATTERNS:
+        cleaned = re.sub(pattern, "", cleaned, flags=re.IGNORECASE).strip()
+    return cleaned
+
+
+def status_text(session: JarvisSession) -> str:
+    book = session.book
+    book.ensure_chapter()
+    chapter = book.chapters[book.current]
+    return (
+        f"Title: {book.title}\n"
+        f"Author: {book.author}\n"
+        f"Chapters: {len(book.chapters)} | Current: {book.current + 1}. {chapter.title}\n"
+        f"Words: {book.word_count()} | Notes: {len(session.notes)}\n"
+        f"AI: "
+        + (
+            "Gemini"
+            if gemini_api_key()
+            else ("OpenAI" if openai_api_key() else "not configured")
+        )
+    )
+
+
+def handle_turn(session: JarvisSession, raw: str, *, voice: bool = False) -> str:
+    text = raw.strip()
+    if not text:
+        return "Say something, or type /help."
+
+    lowered = text.lower().strip()
+    if lowered in QUIT_PHRASES or lowered in {"/quit", "/exit", "/q"}:
+        return "__QUIT__"
+
+    wake_only = bool(re.fullmatch(r"(hey\s+)?jarvis|ok(ay)?\s+jarvis", lowered))
+    if wake_only:
+        return "Yes? How may I help?"
+
+    content = strip_wake_word(text)
+    lowered_content = content.lower().strip()
+
+    if lowered_content in {"help", "/help", "?"}:
+        return HELP_TEXT
+    if lowered_content in {"/status", "status"}:
+        return status_text(session)
+    if lowered_content in {"/time", "time", "what time is it", "what time is it?"}:
+        return f"It is {now_display()}."
+    if lowered_content in {"/devices", "devices"}:
+        return list_audio_devices()
+    if lowered_content in {"/notes", "notes"}:
+        if not session.notes:
+            return "No notes yet. Try: remember the deadline is Friday"
+        return "Notes:\n" + "\n".join(f"- {note}" for note in session.notes)
+    if lowered_content in {"/list", "list", "list chapters"}:
+        session.book.ensure_chapter()
+        lines = []
+        for index, chapter in enumerate(session.book.chapters, start=1):
+            marker = "*" if index - 1 == session.book.current else " "
+            lines.append(f"{marker} {index}. {chapter.title}")
+        return "Chapters:\n" + "\n".join(lines)
+
+    if lowered_content.startswith("/note ") or lowered_content.startswith("remember "):
+        note = content.split(" ", 1)[1].strip()
+        if lowered_content.startswith("remember "):
+            note = content[len("remember ") :].strip()
+        if not note:
+            return "What should I remember?"
+        session.notes.append(note)
+        return f"Noted: {note}"
+
+    if lowered_content.startswith("/title "):
+        session.book.title = content[7:].strip() or session.book.title
+        return f"Title set to {session.book.title}."
+    if lowered_content.startswith("/author "):
+        session.book.author = content[8:].strip() or session.book.author
+        return f"Author set to {session.book.author}."
+
+    if lowered_content.startswith("/chapter"):
+        rest = content[8:].strip()
+        title = rest or f"Chapter {len(session.book.chapters) + 1}"
+        session.book.chapters.append(Chapter(title=title))
+        session.book.current = len(session.book.chapters) - 1
+        return f"Started {title}."
+
+    if lowered_content.startswith("/use "):
+        try:
+            number = int(content[5:].strip())
+        except ValueError:
+            return "Usage: /use <chapter-number>"
+        if number < 1 or number > len(session.book.chapters):
+            return f"Chapter {number} does not exist."
+        session.book.current = number - 1
+        return f"Switched to chapter {number}: {session.book.chapters[session.book.current].title}."
+
+    if (
+        lowered_content.startswith("/dictate ")
+        or lowered_content.startswith("dictate:")
+        or lowered_content.startswith("dictate ")
+    ):
+        if lowered_content.startswith("/dictate "):
+            body = content[9:].strip()
+        elif lowered_content.startswith("dictate:"):
+            body = content.split(":", 1)[1].strip()
+        else:
+            body = content[8:].strip()
+        chapter = session.book.ensure_chapter()
+        if chapter.body and not chapter.body.endswith("\n"):
+            chapter.body += "\n"
+        chapter.body += body + "\n"
+        return f"Dictated to {chapter.title}."
+
+    if lowered_content in {"/read", "read", "read it back"}:
+        chapter = session.book.ensure_chapter()
+        body = chapter.body.strip() or "(empty chapter)"
+        speak(f"{chapter.title}. {body}", voice=voice)
+        return f"Read {chapter.title}."
+
+    if lowered_content.startswith("/save") or lowered_content.startswith("/export"):
+        parts = content.split(maxsplit=1)
+        dest = Path(parts[1].strip()) if len(parts) > 1 else default_export_path(
+            session.book
+        )
+        path = save_session(session.book, dest)
+        return f"Saved manuscript to {path}"
+
+    if lowered_content.startswith("/ask "):
+        question = content[5:].strip()
+        try:
+            answer = generate_reply(
+                question,
+                "You are Jarvis, a concise publishing assistant. Be helpful and brief.",
+            )
+            speak(answer, voice=voice)
+            return answer
+        except Exception as exc:  # noqa: BLE001
+            return f"I cannot answer conversationally yet ({exc}). Try /help."
+
+    if lowered_content in {"/outline", "outline"}:
+        book = session.book
+        prompt = (
+            f"Propose a clear chapter outline for a book titled {book.title!r} "
+            f"by {book.author}. Keep it practical for a publisher."
+        )
+        try:
+            answer = generate_reply(
+                prompt,
+                "You are Jarvis, an expert developmental editor. Return a numbered outline.",
+            )
+            speak(answer, voice=voice)
+            return answer
+        except Exception as exc:  # noqa: BLE001
+            return f"Outline unavailable ({exc})."
+
+    if lowered_content in {"/refine", "refine"}:
+        chapter = session.book.ensure_chapter()
+        prompt = (
+            f"Provide concise editing notes for this chapter titled {chapter.title!r}:\n\n"
+            f"{chapter.body or '(empty)'}"
+        )
+        try:
+            answer = generate_reply(
+                prompt,
+                "You are Jarvis, a sharp line editor. Give actionable notes.",
+            )
+            speak(answer, voice=voice)
+            return answer
+        except Exception as exc:  # noqa: BLE001
+            return f"Refine unavailable ({exc})."
+
+    if content.startswith("/"):
+        return f"Unknown command: {content.split()[0]}. Type /help."
+
+    # Natural language fallbacks
+    if "what time" in lowered_content:
+        return f"It is {now_display()}."
+    if lowered_content.startswith("remember "):
+        note = content[9:].strip()
+        session.notes.append(note)
+        return f"Noted: {note}"
+
+    try:
+        answer = generate_reply(
+            content,
+            "You are Jarvis, a witty personal assistant for Book Publisher Pro. "
+            "Keep replies short unless asked for detail.",
+        )
+        speak(answer, voice=voice)
+        session.history.append((content, answer))
+        return answer
+    except Exception:
+        return (
+            "I cannot answer conversationally without an API key. "
+            "Set GEMINI_API_KEY or OPENAI_API_KEY in .env, or type /help."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Demo / main
+# ---------------------------------------------------------------------------
+
+
+def run_demo(session: JarvisSession) -> int:
+    script = [
+        "Jarvis",
+        "what time is it?",
+        "/title Demo Manuscript",
+        "/author Ada Lovelace",
+        "/note Ship the demo by Friday",
+        "dictate: Once upon a time, code learned to listen.",
+        "/chapter Chapter 2",
+        "/dictate The journey continued under silicon skies.",
+        "/list",
+        "/status",
+        "/export",
+        "stand down",
+    ]
+    export_path: Path | None = None
+    for line in script:
+        print(f"jarvis> {line}")
+        reply = handle_turn(session, line, voice=False)
+        if reply == "__QUIT__":
+            print("Goodbye.")
+            break
+        print(reply)
+        if reply.startswith("Saved manuscript to "):
+            export_path = Path(reply.split("Saved manuscript to ", 1)[1].strip())
+    if export_path and export_path.is_file():
+        print(f"DEMO_OK {export_path}")
+        return 0
+    print("DEMO_FAIL")
+    return 1
+
+
 def main(argv: list[str] | None = None) -> int:
-    load_env_files()
-    args = build_parser().parse_args(argv)
-    global DEFAULT_SAVE_DIR
-    DEFAULT_SAVE_DIR = args.save_dir
-    book = load_manuscript(args.manuscript) if args.manuscript else BookSession()
-    session = JarvisSession(book=book)
+    load_env()
+    parser = argparse.ArgumentParser(description="Jarvis workspace assistant")
+    parser.add_argument(
+        "--text",
+        action="store_true",
+        help="Force typed input (no microphone).",
+    )
+    parser.add_argument(
+        "--voice",
+        action="store_true",
+        help="Enable sounddevice mic capture + TTS playback when keys allow.",
+    )
+    parser.add_argument(
+        "--demo",
+        action="store_true",
+        help="Run a non-interactive smoke test and export a manuscript.",
+    )
+    parser.add_argument(
+        "--manuscript",
+        type=Path,
+        help="Load an existing markdown or JSON manuscript.",
+    )
+    args = parser.parse_args(argv)
+
+    session = JarvisSession()
+    if args.manuscript:
+        session.book = load_manuscript(args.manuscript)
+        print(f"Loaded manuscript from {args.manuscript}")
+
     if args.demo:
-        return run_demo(session, args.save_dir)
-    isatty = getattr(sys.stdin, "isatty", None)
-    if not (isatty and isatty()):
-        return run_batch(session)
-    return run_repl(session, force_text=args.text)
+        return run_demo(session)
+
+    voice = bool(args.voice) and not bool(args.text)
+    print("Jarvis online. Type /help — or say \"Hey Jarvis\".")
+    if voice:
+        print("Voice mode enabled (sounddevice). Ctrl+C to stop.")
+    else:
+        print("Text mode (pass --voice for microphone).")
+
+    while True:
+        try:
+            line = prompt_line(force_text=args.text or not voice, voice=voice)
+        except KeyboardInterrupt:
+            print("\nGoodbye.")
+            return 0
+        reply = handle_turn(session, line, voice=voice)
+        if reply == "__QUIT__":
+            print("Goodbye.")
+            return 0
+        print(reply)
 
 
 if __name__ == "__main__":
-    try:
-        raise SystemExit(main())
-    except KeyboardInterrupt:
-        print("\nStanding down. Goodbye.")
-        raise SystemExit(130)
-    except Exception:
-        traceback.print_exc()
-        raise SystemExit(1)
+    raise SystemExit(main())

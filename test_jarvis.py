@@ -1,4 +1,4 @@
-"""Tests for the Book Publisher Pro Jarvis assistant."""
+"""Tests for the jarvis-workspace assistant."""
 
 from __future__ import annotations
 
@@ -25,6 +25,7 @@ class JarvisTurnTests(unittest.TestCase):
         help_reply = jarvis.handle_turn(session, "help")
         self.assertIn("/dictate", help_reply)
         self.assertIn("/quit", help_reply)
+        self.assertIn("/devices", help_reply)
 
     def test_remember_and_notes(self) -> None:
         session = jarvis.JarvisSession()
@@ -79,15 +80,34 @@ class JarvisTurnTests(unittest.TestCase):
 
     def test_ask_without_api_key_does_not_crash(self) -> None:
         session = jarvis.JarvisSession()
-        with patch.dict("os.environ", {"GEMINI_API_KEY": ""}, clear=False):
-            reply = jarvis.handle_turn(session, "What is a good subtitle for this book?")
+        with patch.dict(
+            "os.environ",
+            {"GEMINI_API_KEY": "", "OPENAI_API_KEY": ""},
+            clear=False,
+        ):
+            reply = jarvis.handle_turn(
+                session, "What is a good subtitle for this book?"
+            )
         self.assertIn("cannot answer conversationally", reply)
         self.assertIn("/help", reply)
+
+    def test_float_to_wav_roundtrip_shape(self) -> None:
+        import numpy as np
+
+        audio = np.zeros(1600, dtype=np.float32)
+        audio[100:200] = 0.25
+        wav = jarvis.float_to_wav_bytes(audio, 16000)
+        self.assertGreater(len(wav), 44)
+        self.assertTrue(wav.startswith(b"RIFF"))
 
     def test_piped_session_exits_cleanly(self) -> None:
         script = "Jarvis\nwhat time is it?\n/status\nstand down\n"
         with patch("sys.stdin", io.StringIO(script)):
-            code = jarvis.main([])
+            code = jarvis.main(["--text"])
+        self.assertEqual(code, 0)
+
+    def test_demo_mode(self) -> None:
+        code = jarvis.main(["--demo"])
         self.assertEqual(code, 0)
 
 
