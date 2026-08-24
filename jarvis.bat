@@ -12,10 +12,10 @@ if not exist ".venv\Scripts\activate.bat" (
 )
 
 call ".venv\Scripts\activate.bat"
-python -c "import google.genai" 2>nul
+python -c "import sounddevice, numpy, requests, dotenv" 2>nul
 if errorlevel 1 (
   echo Installing Jarvis dependencies ...
-  python -m pip install -r requirements-jarvis.txt
+  python -m pip install -r requirements.txt
 )
 
 python jarvis.py %*
