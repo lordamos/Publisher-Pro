@@ -1,0 +1,5 @@
+google-genai>=1.40.0
+# Optional local speech (install on a machine with a microphone/speakers):
+# SpeechRecognition
+# pyttsx3
+# PyAudio
