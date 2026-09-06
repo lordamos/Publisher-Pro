@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Compatibility launcher for Publisher Studio (Jarvis entrypoint)."""
+"""Compatibility launcher for Publisher Studio (Voice Studio entrypoint)."""
 
 from studio import (  # noqa: F401
-    JarvisSession,
-    handle_turn,
+    BookSession,
+    handle_command,
     load_manuscript,
     main,
 )

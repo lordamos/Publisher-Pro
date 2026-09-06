@@ -19,29 +19,29 @@ View your app in AI Studio: https://ai.studio/apps/c637052f-7a73-458d-a899-7454e
 3. Run the app:
    `npm run dev`
 
-## Jarvis assistant
+## Publisher Studio (Voice + Jarvis)
 
-Start a terminal assistant that can take notes, dictate chapters, read them back, and (when `GEMINI_API_KEY` is set) answer questions or generate outlines.
+One terminal app: Voice Studio dictation plus the Jarvis assistant. Plain lines go into the manuscript. Questions, notes, and “Jarvis, …” phrases go to the assistant. `/outline` and `/refine` use Gemini when `GEMINI_API_KEY` is set.
 
 **Windows**
 
 ```bat
 python -m venv .venv
 .\.venv\Scripts\activate
-pip install -r requirements-jarvis.txt
-python jarvis.py
+pip install -r requirements.txt
+python studio.py
 ```
 
-Or run `jarvis.bat`, which creates `.venv` and installs dependencies if needed.
+`python run_voice.py` and `python jarvis.py` launch the same studio. Or run `studio.bat`.
 
 **macOS / Linux**
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements-jarvis.txt
-python jarvis.py
+pip install -r requirements.txt
+python studio.py
 ```
 
 Useful flags: `--text` (typed input only), `--demo` (non-interactive smoke test), `--manuscript path.md`.
-Type `/help` inside the session, or speak naturally (`Jarvis, what time is it?`).
+Type `/help` inside the session, dictate freely, or speak naturally (`Jarvis, what time is it?`).

@@ -10,4 +10,6 @@ coverage/
 .venv/
 __pycache__/
 *.pyc
+voice_sessions/
 jarvis_sessions/
+studio_sessions/
