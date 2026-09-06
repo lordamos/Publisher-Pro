@@ -45,3 +45,30 @@ python run_voice.py
 
 Useful flags: `--text` (typed input only), `--demo` (non-interactive smoke test), `--manuscript path.md`.
 Type `/help` inside the session for slash commands. Plain lines are treated as dictation.
+
+## Jarvis assistant
+
+Start a terminal assistant that can take notes, dictate chapters, read them back, and (when `GEMINI_API_KEY` is set) answer questions or generate outlines.
+
+**Windows**
+
+```bat
+python -m venv .venv
+.\.venv\Scripts\activate
+pip install -r requirements-jarvis.txt
+python jarvis.py
+```
+
+Or run `jarvis.bat`, which creates `.venv` and installs dependencies if needed.
+
+**macOS / Linux**
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements-jarvis.txt
+python jarvis.py
+```
+
+Useful flags: `--text` (typed input only), `--demo` (non-interactive smoke test), `--manuscript path.md`.
+Type `/help` inside the session, or speak naturally (`Jarvis, what time is it?`).
