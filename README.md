@@ -1,23 +1,40 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# Hermes Control Desk
 
-# Run and deploy your AI Studio app
+Web and Windows controller for the Hermes Memory OS VPS. Jarvis files in this repo are unchanged.
 
-This contains everything you need to run your app locally.
+Default target: `root@100.118.230.116`. Stack path: `/opt/hermes-memory-os` with `docker-compose.prod.yml`. Qdrant is a standalone container named `qdrant` — restart is `docker restart qdrant` only.
 
-View your app in AI Studio: https://ai.studio/apps/c637052f-7a73-458d-a899-7454e4e7db34
+If the VPS is unreachable (no Tailscale path, no SSH keys, restricted egress), the desk still loads and shows **OFFLINE** / SSH error output. It does not wait for connectivity.
 
-## Run Locally
+## Windows desktop app
 
-**Prerequisites:**  Node.js
+Requires the **OpenSSH Client** and PowerShell in a **STA** apartment (WPF). Saved config lives at `%APPDATA%\HermesControlDesk\config.json`.
 
+```powershell
+cd windows
+powershell.exe -STA -NoProfile -ExecutionPolicy Bypass -File .\HermesControlDesk.ps1
+```
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+Or run `windows\Run-HermesControlDesk.cmd`. Full notes: [`windows/README.md`](windows/README.md).
+
+## Web Control Desk
+
+**Prerequisites:** Node.js
+
+```bash
+npm install
+npm run dev
+```
+
+Open `http://localhost:3000`. The UI is on port 3000; the SSH backend is on port 8787 (`/api` is proxied). Host and user are stored in the browser (`localStorage`).
+
+SSH matches the Windows app: `ssh -o BatchMode=yes -o ConnectTimeout=8 user@host …`.
+
+Useful scripts:
+
+- `npm run server` — API only (`0.0.0.0:8787`)
+- `npm test` — command-map and SSH-flag checks (no live VPS calls)
+- `npm run lint` — TypeScript
 
 ## Jarvis assistant
 

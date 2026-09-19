@@ -1,5 +1,5 @@
 {
-  "name": "Book Publisher Pro",
-  "description": "A professional book publishing platform with AI-assisted editing, layout management, and direct export to KDP.",
+  "name": "Hermes Control Desk",
+  "description": "Web and Windows controller for the Hermes Memory OS VPS: stack, services, logs, and a remote root console.",
   "requestFramePermissions": []
 }
