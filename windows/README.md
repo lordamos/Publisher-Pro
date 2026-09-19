@@ -48,3 +48,22 @@ The desk writes this file on refresh/action and again when the window closes.
 - Stack path: `/opt/hermes-memory-os` with `docker-compose.prod.yml`
 - GitHub runner unit: `actions.runner.lordamos-hermes-memory-os.vps-hermes.service`
 - Qdrant is a **standalone** container named `qdrant`. Restart is `docker restart qdrant` only — never start another Compose Qdrant on port 6333
+- Agent Zero web UI: `http://100.118.230.116:50080` (container `agent-zero`, sidecar `docker-compose.agent-zero-kali.yml`)
+- Kali desktop (noVNC): `https://100.118.230.116:6901` (container `kali-novnc`, login `kasm_user` / `password`)
+
+## Agent Zero and Kali (from this Windows host)
+
+Cursor Cloud cannot reach the Tailscale VPS. Run these on the Windows/Tailscale machine:
+
+```powershell
+scp ..\deploy\docker-compose.agent-zero-kali.yml root@100.118.230.116:/opt/hermes-memory-os/docker-compose.agent-zero-kali.yml
+ssh -o BatchMode=yes -o ConnectTimeout=8 root@100.118.230.116 "bash -s" < ..\deploy\start-agent-zero-kali.sh
+```
+
+Or click **START LABS** in the Control Desk after the compose file is on the VPS.
+
+Then open:
+
+- Agent Zero: `http://100.118.230.116:50080`
+- Kali noVNC: `https://100.118.230.116:6901` (accept the Kasm self-signed cert; user `kasm_user`, password `password` — change `VNC_PW` in the compose file)
+

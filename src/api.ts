@@ -11,6 +11,13 @@ export type DeskConfig = {
   runnerService: string;
   qdrantContainer: string;
   composePath: string;
+  labsComposePath: string;
+  agentZeroContainer: string;
+  agentZeroPort: number;
+  kaliContainer: string;
+  kaliPort: number;
+  agentZeroUrl: string;
+  kaliUrl: string;
 };
 
 export type DeskStatus = {
@@ -20,6 +27,8 @@ export type DeskStatus = {
   api: ServiceStatus;
   dashboard: ServiceStatus;
   qdrant: ServiceStatus;
+  agentZero: ServiceStatus;
+  kali: ServiceStatus;
   runner: ServiceStatus;
   cli: ServiceStatus;
   runnerOutput: string;

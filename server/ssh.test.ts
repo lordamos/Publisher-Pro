@@ -2,14 +2,20 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {ACTIONS} from "./actions.ts";
 import {
+  AGENT_ZERO_PORT,
   DEFAULT_HOST,
   DEFAULT_USER,
+  KALI_NOVNC_PORT,
+  LABS_COMPOSE,
   PROD_COMPOSE,
   QDRANT_CONTAINER,
   REPO,
   RUNNER_SERVICE,
 } from "./constants.ts";
 import {buildSshArgs, encodeRawCommand, targetOf} from "./ssh.ts";
+import fs from "node:fs";
+import path from "node:path";
+import {fileURLToPath} from "node:url";
 
 test("defaults match the Windows Control Desk", () => {
   assert.equal(DEFAULT_HOST, "100.118.230.116");
@@ -86,8 +92,39 @@ test("every Control Desk action is registered", () => {
     "hermes-logs",
     "system-status",
     "raw-command",
+    "start-labs",
+    "restart-agent-zero",
+    "restart-kali",
+    "agent-zero-logs",
+    "kali-logs",
   ];
   for (const id of expected) {
     assert.ok(ACTIONS[id], `missing action ${id}`);
   }
+});
+
+test("Agent Zero and Kali use sidecar compose, not Qdrant 6333", () => {
+  assert.equal(LABS_COMPOSE, "docker-compose.agent-zero-kali.yml");
+  assert.equal(AGENT_ZERO_PORT, 50080);
+  assert.equal(KALI_NOVNC_PORT, 6901);
+  assert.equal(ACTIONS["restart-agent-zero"].command, "docker restart agent-zero");
+  assert.equal(ACTIONS["restart-kali"].command, "docker restart kali-novnc");
+  assert.match(
+    ACTIONS["start-labs"].command || "",
+    /docker compose -f docker-compose.agent-zero-kali.yml up -d/,
+  );
+  assert.equal(ACTIONS["start-labs"].command?.includes("6333"), false);
+
+  const compose = fs.readFileSync(
+    path.resolve(
+      path.dirname(fileURLToPath(import.meta.url)),
+      "../deploy/docker-compose.agent-zero-kali.yml",
+    ),
+    "utf8",
+  );
+  assert.equal(/^\s*-\s*["']?6333/m.test(compose), false);
+  assert.equal(compose.includes("50080:80"), true);
+  assert.equal(compose.includes("6901:6901"), true);
+  assert.match(compose, /container_name:\s*agent-zero/);
+  assert.match(compose, /container_name:\s*kali-novnc/);
 });

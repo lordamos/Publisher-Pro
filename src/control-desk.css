@@ -117,10 +117,13 @@ body,
   margin: 0;
 }
 
+.hcd-status-block {
+  margin-bottom: 14px;
+}
+
 .hcd-status {
   display: grid;
   grid-template-columns: repeat(5, 1fr);
-  margin-bottom: 14px;
 }
 
 .hcd-card {

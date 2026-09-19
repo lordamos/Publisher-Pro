@@ -15,6 +15,7 @@ $ErrorActionPreference = "Continue"
 
 $Repo          = "/opt/hermes-memory-os"
 $ProdCompose   = "docker-compose.prod.yml"
+$LabsCompose   = "docker-compose.agent-zero-kali.yml"
 $RunnerService = "actions.runner.lordamos-hermes-memory-os.vps-hermes.service"
 
 $ConfigDir  = Join-Path $env:APPDATA "HermesControlDesk"
@@ -131,7 +132,8 @@ else {
         </Grid>
 
         <!-- STATUS -->
-        <Grid Grid.Row="1" Margin="0,0,0,14">
+        <StackPanel Grid.Row="1" Margin="0,0,0,14">
+        <Grid>
             <Grid.ColumnDefinitions>
                 <ColumnDefinition/>
                 <ColumnDefinition/>
@@ -240,6 +242,54 @@ else {
                 </StackPanel>
             </Border>
         </Grid>
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition/>
+                <ColumnDefinition/>
+                <ColumnDefinition/>
+                <ColumnDefinition/>
+                <ColumnDefinition/>
+            </Grid.ColumnDefinitions>
+            <Border
+                Grid.Column="0"
+                Background="#101823"
+                BorderBrush="#26374A"
+                BorderThickness="1"
+                CornerRadius="6"
+                Margin="4"
+                Padding="14">
+                <StackPanel>
+                    <TextBlock Text="AGENT ZERO" Foreground="#8192A5"/>
+                    <TextBlock
+                        x:Name="AgentZeroStatus"
+                        Text="UNKNOWN"
+                        FontSize="18"
+                        FontWeight="Bold"
+                        Margin="0,5,0,0"/>
+                    <TextBlock Text="50080" Foreground="#566579"/>
+                </StackPanel>
+            </Border>
+            <Border
+                Grid.Column="1"
+                Background="#101823"
+                BorderBrush="#26374A"
+                BorderThickness="1"
+                CornerRadius="6"
+                Margin="4"
+                Padding="14">
+                <StackPanel>
+                    <TextBlock Text="KALI NOVNC" Foreground="#8192A5"/>
+                    <TextBlock
+                        x:Name="KaliStatus"
+                        Text="UNKNOWN"
+                        FontSize="18"
+                        FontWeight="Bold"
+                        Margin="0,5,0,0"/>
+                    <TextBlock Text="6901" Foreground="#566579"/>
+                </StackPanel>
+            </Border>
+        </Grid>
+        </StackPanel>
 
         <!-- MAIN TABS -->
         <TabControl
@@ -314,6 +364,23 @@ else {
                         </WrapPanel>
 
                         <TextBlock
+                            Text="Agent Zero &amp; Kali"
+                            FontSize="18"
+                            FontWeight="Bold"
+                            Margin="4,18,4,8"/>
+                        <WrapPanel>
+                            <Button
+                                x:Name="StartLabsButton"
+                                Content="▶ START LABS"/>
+                            <Button
+                                x:Name="RestartAgentZeroButton"
+                                Content="↻ AGENT ZERO"/>
+                            <Button
+                                x:Name="RestartKaliButton"
+                                Content="↻ KALI"/>
+                        </WrapPanel>
+
+                        <TextBlock
                             Text="Web"
                             FontSize="18"
                             FontWeight="Bold"
@@ -328,6 +395,12 @@ else {
                             <Button
                                 x:Name="OpenQdrantButton"
                                 Content="🌐 QDRANT"/>
+                            <Button
+                                x:Name="OpenAgentZeroButton"
+                                Content="🌐 AGENT ZERO"/>
+                            <Button
+                                x:Name="OpenKaliButton"
+                                Content="🌐 KALI DESKTOP"/>
                         </WrapPanel>
                     </StackPanel>
                 </ScrollViewer>
@@ -407,6 +480,12 @@ else {
                         <Button
                             x:Name="SystemButton"
                             Content="SYSTEM STATUS"/>
+                        <Button
+                            x:Name="AgentZeroLogsButton"
+                            Content="AGENT ZERO LOGS"/>
+                        <Button
+                            x:Name="KaliLogsButton"
+                            Content="KALI LOGS"/>
                     </WrapPanel>
                 </StackPanel>
             </TabItem>
@@ -475,6 +554,8 @@ $ControlNames = @(
     "QdrantStatus",
     "RunnerStatus",
     "CliStatus",
+    "AgentZeroStatus",
+    "KaliStatus",
     "StartCoreButton",
     "StopCoreButton",
     "RestartCoreButton",
@@ -488,9 +569,14 @@ $ControlNames = @(
     "HermesChatButton",
     "RootShellButton",
     "RootShell2Button",
+    "StartLabsButton",
+    "RestartAgentZeroButton",
+    "RestartKaliButton",
     "OpenDashboardButton",
     "OpenApiButton",
     "OpenQdrantButton",
+    "OpenAgentZeroButton",
+    "OpenKaliButton",
     "RawCommandBox",
     "RunRawCommandButton",
     "ClearCommandButton",
@@ -500,6 +586,8 @@ $ControlNames = @(
     "DockerButton",
     "HermesLogsButton",
     "SystemButton",
+    "AgentZeroLogsButton",
+    "KaliLogsButton",
     "OutputBox",
     "ClearOutputButton"
 )
@@ -697,6 +785,14 @@ function Refresh-HermesDashboard {
     Set-Status `
         $QdrantStatus `
         (Test-HermesPort $HostName 6333)
+
+    Set-Status `
+        $AgentZeroStatus `
+        (Test-HermesPort $HostName 50080)
+
+    Set-Status `
+        $KaliStatus `
+        (Test-HermesPort $HostName 6901)
 
     $Runner = Invoke-HermesSSH `
         "systemctl is-active $RunnerService 2>/dev/null || true" `
@@ -899,6 +995,41 @@ $OpenQdrantButton.Add_Click({
     Start-Process "http://${HostName}:6333/dashboard"
 })
 
+$OpenAgentZeroButton.Add_Click({
+    $HostName = $HostBox.Text.Trim()
+    Start-Process "http://${HostName}:50080"
+})
+
+$OpenKaliButton.Add_Click({
+    $HostName = $HostBox.Text.Trim()
+    Start-Process "https://${HostName}:6901"
+})
+
+# --------------------------------------------------------------
+# AGENT ZERO + KALI
+# --------------------------------------------------------------
+
+$StartLabsButton.Add_Click({
+    Invoke-ControlAction `
+        "START AGENT ZERO + KALI" `
+        "if [ ! -f $Repo/$LabsCompose ]; then echo MISSING $Repo/$LabsCompose; echo Copy deploy/docker-compose.agent-zero-kali.yml from Publisher-Pro onto the VPS.; exit 2; fi && mkdir -p /opt/agent-zero/usr && cd $Repo && docker compose -f $LabsCompose up -d"
+    Refresh-HermesDashboard
+})
+
+$RestartAgentZeroButton.Add_Click({
+    Invoke-ControlAction `
+        "RESTART AGENT ZERO" `
+        "docker restart agent-zero"
+    Refresh-HermesDashboard
+})
+
+$RestartKaliButton.Add_Click({
+    Invoke-ControlAction `
+        "RESTART KALI" `
+        "docker restart kali-novnc"
+    Refresh-HermesDashboard
+})
+
 # --------------------------------------------------------------
 # LOGS
 # --------------------------------------------------------------
@@ -939,6 +1070,18 @@ $SystemButton.Add_Click({
         "printf '%s\n' '--- uptime ---'; uptime; printf '%s\n' '--- memory ---'; free -h; printf '%s\n' '--- disk ---'; df -h /; printf '%s\n' '--- docker ---'; docker ps"
 })
 
+$AgentZeroLogsButton.Add_Click({
+    Invoke-ControlAction `
+        "AGENT ZERO LOGS" `
+        "docker logs --tail=150 agent-zero"
+})
+
+$KaliLogsButton.Add_Click({
+    Invoke-ControlAction `
+        "KALI LOGS" `
+        "docker logs --tail=150 kali-novnc"
+})
+
 # --------------------------------------------------------------
 # OUTPUT
 # --------------------------------------------------------------
@@ -955,6 +1098,9 @@ $Window.Add_ContentRendered({
     Add-ConsoleLine "Hermes Control Desk initialized."
     Add-ConsoleLine "Production compose: $Repo/$ProdCompose"
     Add-ConsoleLine "Standalone Qdrant container: qdrant"
+    Add-ConsoleLine "Labs compose: $Repo/$LabsCompose"
+    Add-ConsoleLine "Agent Zero UI: http://$($HostBox.Text.Trim()):50080"
+    Add-ConsoleLine "Kali noVNC: https://$($HostBox.Text.Trim()):6901"
     Refresh-HermesDashboard
 })
 

@@ -30,6 +30,24 @@ Open `http://localhost:3000`. The UI is on port 3000; the SSH backend is on port
 
 SSH matches the Windows app: `ssh -o BatchMode=yes -o ConnectTimeout=8 user@host …`.
 
+## Agent Zero and Kali
+
+Not present in the Hermes prod compose. Access is a sidecar stack (`deploy/docker-compose.agent-zero-kali.yml`) that does **not** touch Qdrant/`6333`.
+
+| App | URL | Container | Port |
+| --- | --- | --- | --- |
+| Agent Zero web UI | `http://100.118.230.116:50080` | `agent-zero` | `50080→80` |
+| Kali desktop (noVNC) | `https://100.118.230.116:6901` | `kali-novnc` | `6901` |
+
+Kali login: `kasm_user` / `password` (change `VNC_PW`). This Cloud Agent cannot SSH to the Tailscale VPS; start the stack from a Windows/Tailscale host:
+
+```bash
+scp deploy/docker-compose.agent-zero-kali.yml root@100.118.230.116:/opt/hermes-memory-os/docker-compose.agent-zero-kali.yml
+ssh -o BatchMode=yes -o ConnectTimeout=8 root@100.118.230.116 'bash -s' < deploy/start-agent-zero-kali.sh
+```
+
+Control Desk **START LABS** runs the same `docker compose … up -d` once that file is on the VPS. Open buttons: **AGENT ZERO** and **KALI DESKTOP**.
+
 Useful scripts:
 
 - `npm run server` — API only (`0.0.0.0:8787`)

@@ -1,4 +1,7 @@
 import {
+  AGENT_ZERO_CONTAINER,
+  KALI_CONTAINER,
+  LABS_COMPOSE,
   PROD_COMPOSE,
   QDRANT_CONTAINER,
   REPO,
@@ -151,6 +154,42 @@ export const ACTIONS: Record<string, ControlAction> = {
     title: "REMOTE ROOT COMMAND",
     kind: "raw",
     refresh: true,
+  },
+  "start-labs": {
+    id: "start-labs",
+    title: "START AGENT ZERO + KALI",
+    kind: "ssh",
+    command:
+      `if [ ! -f ${REPO}/${LABS_COMPOSE} ]; then echo "MISSING ${REPO}/${LABS_COMPOSE}"; echo "Copy deploy/docker-compose.agent-zero-kali.yml from Publisher-Pro onto the VPS."; exit 2; fi && mkdir -p /opt/agent-zero/usr && cd ${REPO} && docker compose -f ${LABS_COMPOSE} up -d`,
+    refresh: true,
+  },
+  "restart-agent-zero": {
+    id: "restart-agent-zero",
+    title: "RESTART AGENT ZERO",
+    kind: "ssh",
+    command: `docker restart ${AGENT_ZERO_CONTAINER}`,
+    refresh: true,
+  },
+  "restart-kali": {
+    id: "restart-kali",
+    title: "RESTART KALI",
+    kind: "ssh",
+    command: `docker restart ${KALI_CONTAINER}`,
+    refresh: true,
+  },
+  "agent-zero-logs": {
+    id: "agent-zero-logs",
+    title: "AGENT ZERO LOGS",
+    kind: "ssh",
+    command: `docker logs --tail=150 ${AGENT_ZERO_CONTAINER}`,
+    refresh: false,
+  },
+  "kali-logs": {
+    id: "kali-logs",
+    title: "KALI LOGS",
+    kind: "ssh",
+    command: `docker logs --tail=150 ${KALI_CONTAINER}`,
+    refresh: false,
   },
 };
 

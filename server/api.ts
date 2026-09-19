@@ -5,8 +5,13 @@ import {
   RUNNER_STATUS_COMMAND,
 } from "./actions.ts";
 import {
+  AGENT_ZERO_CONTAINER,
+  AGENT_ZERO_PORT,
   DEFAULT_HOST,
   DEFAULT_USER,
+  KALI_CONTAINER,
+  KALI_NOVNC_PORT,
+  LABS_COMPOSE,
   PROD_COMPOSE,
   QDRANT_CONTAINER,
   REPO,
@@ -67,13 +72,16 @@ function statusPayload(
 
 export async function refreshStatus(creds: Creds) {
   const {host, user} = creds;
-  const [apiOpen, dashboardOpen, qdrantOpen, runner, cli] = await Promise.all([
-    testPort(host, 8000),
-    testPort(host, 3001),
-    testPort(host, 6333),
-    invokeSsh(user, host, RUNNER_STATUS_COMMAND, 20_000),
-    invokeSsh(user, host, CLI_STATUS_COMMAND, 20_000),
-  ]);
+  const [apiOpen, dashboardOpen, qdrantOpen, agentZeroOpen, kaliOpen, runner, cli] =
+    await Promise.all([
+      testPort(host, 8000),
+      testPort(host, 3001),
+      testPort(host, 6333),
+      testPort(host, AGENT_ZERO_PORT),
+      testPort(host, KALI_NOVNC_PORT),
+      invokeSsh(user, host, RUNNER_STATUS_COMMAND, 20_000),
+      invokeSsh(user, host, CLI_STATUS_COMMAND, 20_000),
+    ]);
 
   const runnerOnline = runner.output.trim() === "active";
   const cliOnline = cli.output.trim() === "READY";
@@ -91,6 +99,8 @@ export async function refreshStatus(creds: Creds) {
     api: statusPayload(apiOpen, "ONLINE", "OFFLINE"),
     dashboard: statusPayload(dashboardOpen, "ONLINE", "OFFLINE"),
     qdrant: statusPayload(qdrantOpen, "ONLINE", "OFFLINE"),
+    agentZero: statusPayload(agentZeroOpen, "ONLINE", "OFFLINE"),
+    kali: statusPayload(kaliOpen, "ONLINE", "OFFLINE"),
     runner: statusPayload(runnerOnline, "ACTIVE", "DOWN"),
     cli: statusPayload(cliOnline, "READY", "MISSING"),
     runnerOutput: runner.output,
@@ -231,6 +241,13 @@ export async function handleApi(
         runnerService: RUNNER_SERVICE,
         qdrantContainer: QDRANT_CONTAINER,
         composePath: `${REPO}/${PROD_COMPOSE}`,
+        labsComposePath: `${REPO}/${LABS_COMPOSE}`,
+        agentZeroContainer: AGENT_ZERO_CONTAINER,
+        agentZeroPort: AGENT_ZERO_PORT,
+        kaliContainer: KALI_CONTAINER,
+        kaliPort: KALI_NOVNC_PORT,
+        agentZeroUrl: `http://${DEFAULT_HOST}:${AGENT_ZERO_PORT}`,
+        kaliUrl: `https://${DEFAULT_HOST}:${KALI_NOVNC_PORT}`,
       });
       return true;
     }

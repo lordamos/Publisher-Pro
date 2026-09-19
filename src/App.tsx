@@ -57,6 +57,8 @@ export default function App() {
   const [api, setApi] = useState<ServiceStatus>(UNKNOWN);
   const [dashboard, setDashboard] = useState<ServiceStatus>(UNKNOWN);
   const [qdrant, setQdrant] = useState<ServiceStatus>(UNKNOWN);
+  const [agentZero, setAgentZero] = useState<ServiceStatus>(UNKNOWN);
+  const [kali, setKali] = useState<ServiceStatus>(UNKNOWN);
   const [runner, setRunner] = useState<ServiceStatus>(UNKNOWN);
   const [cli, setCli] = useState<ServiceStatus>(UNKNOWN);
   const outputRef = useRef<HTMLTextAreaElement>(null);
@@ -82,6 +84,8 @@ export default function App() {
       setApi(status.api);
       setDashboard(status.dashboard);
       setQdrant(status.qdrant);
+      setAgentZero(status.agentZero);
+      setKali(status.kali);
       setRunner(status.runner);
       setCli(status.cli);
       if (status.sshUnreachable && status.sshError) {
@@ -96,6 +100,8 @@ export default function App() {
     setApi(offline);
     setDashboard(offline);
     setQdrant(offline);
+    setAgentZero(offline);
+    setKali(offline);
     setRunner({online: false, label: "DOWN"});
     setCli({online: false, label: "MISSING"});
     addLine(`ERROR: ${reason}`);
@@ -155,6 +161,7 @@ export default function App() {
     started.current = true;
     void (async () => {
       let composePath = "/opt/hermes-memory-os/docker-compose.prod.yml";
+      let labsPath = "/opt/hermes-memory-os/docker-compose.agent-zero-kali.yml";
       let qdrantName = "qdrant";
       let nextUser = saved.user || "root";
       let nextHost = saved.host || "100.118.230.116";
@@ -163,6 +170,7 @@ export default function App() {
         nextUser = saved.user || cfg.user;
         nextHost = saved.host || cfg.host;
         composePath = cfg.composePath;
+        labsPath = cfg.labsComposePath || labsPath;
         qdrantName = cfg.qdrantContainer;
         setUser(nextUser);
         setHost(nextHost);
@@ -171,7 +179,10 @@ export default function App() {
       }
       addLine("Hermes Control Desk initialized.");
       addLine(`Production compose: ${composePath}`);
+      addLine(`Labs compose: ${labsPath}`);
       addLine(`Standalone Qdrant container: ${qdrantName}`);
+      addLine(`Agent Zero UI: http://${nextHost}:50080`);
+      addLine(`Kali noVNC: https://${nextHost}:6901  (kasm_user / password)`);
       addLine("Refreshing status...");
       try {
         saveTarget(nextUser, nextHost);
@@ -183,8 +194,12 @@ export default function App() {
     })();
   }, [addLine, applyStatus, markOffline, saved.host, saved.user]);
 
-  const openWeb = (path: string) => {
-    window.open(`http://${host.trim()}${path}`, "_blank", "noopener,noreferrer");
+  const openWeb = (path: string, protocol: "http" | "https" = "http") => {
+    window.open(
+      `${protocol}://${host.trim()}${path}`,
+      "_blank",
+      "noopener,noreferrer",
+    );
   };
 
   const executeRaw = () => {
@@ -226,6 +241,7 @@ export default function App() {
         </div>
       </header>
 
+      <div className="hcd-status-block">
       <section className="hcd-status" aria-label="Service status">
         <StatusCard label="HERMES API" status={api} detail="8000" />
         <StatusCard label="DASHBOARD" status={dashboard} detail="3001" />
@@ -233,6 +249,11 @@ export default function App() {
         <StatusCard label="GITHUB RUNNER" status={runner} detail="SYSTEMD" />
         <StatusCard label="HERMES CLI" status={cli} detail="SSH" />
       </section>
+      <section className="hcd-status" aria-label="Labs status">
+        <StatusCard label="AGENT ZERO" status={agentZero} detail="50080" />
+        <StatusCard label="KALI NOVNC" status={kali} detail="6901" />
+      </section>
+      </div>
 
       <div className="hcd-tabs">
         <div className="hcd-tab-list" role="tablist">
@@ -316,6 +337,19 @@ export default function App() {
                 </button>
               </div>
 
+              <div className="hcd-section-title spaced">Agent Zero & Kali</div>
+              <div className="hcd-wrap">
+                <button type="button" className="hcd-btn" disabled={busy} onClick={() => void run("start-labs")}>
+                  ▶ START LABS
+                </button>
+                <button type="button" className="hcd-btn" disabled={busy} onClick={() => void run("restart-agent-zero")}>
+                  ↻ AGENT ZERO
+                </button>
+                <button type="button" className="hcd-btn" disabled={busy} onClick={() => void run("restart-kali")}>
+                  ↻ KALI
+                </button>
+              </div>
+
               <div className="hcd-section-title spaced">Web</div>
               <div className="hcd-wrap">
                 <button type="button" className="hcd-btn" onClick={() => openWeb(":3001")}>
@@ -326,6 +360,12 @@ export default function App() {
                 </button>
                 <button type="button" className="hcd-btn" onClick={() => openWeb(":6333/dashboard")}>
                   🌐 QDRANT
+                </button>
+                <button type="button" className="hcd-btn" onClick={() => openWeb(":50080")}>
+                  🌐 AGENT ZERO
+                </button>
+                <button type="button" className="hcd-btn" onClick={() => openWeb(":6901", "https")}>
+                  🌐 KALI DESKTOP
                 </button>
               </div>
             </div>
@@ -388,6 +428,12 @@ export default function App() {
                 </button>
                 <button type="button" className="hcd-btn" disabled={busy} onClick={() => void run("system-status")}>
                   SYSTEM STATUS
+                </button>
+                <button type="button" className="hcd-btn" disabled={busy} onClick={() => void run("agent-zero-logs")}>
+                  AGENT ZERO LOGS
+                </button>
+                <button type="button" className="hcd-btn" disabled={busy} onClick={() => void run("kali-logs")}>
+                  KALI LOGS
                 </button>
               </div>
             </div>
