@@ -1,0 +1,35 @@
+# Agent Zero web UI + Kali noVNC desktop for the Hermes VPS.
+# Sidecar file — do not merge into docker-compose.prod.yml.
+# Do not start Qdrant. Do not bind host ports 6333, 3001, or 8000.
+#
+# Copy to the VPS (from a Tailscale/Windows host that can SSH):
+#   scp deploy/docker-compose.agent-zero-kali.yml root@100.118.230.116:/opt/hermes-memory-os/docker-compose.agent-zero-kali.yml
+#   ssh root@100.118.230.116 "mkdir -p /opt/agent-zero/usr && cd /opt/hermes-memory-os && docker compose -f docker-compose.agent-zero-kali.yml up -d"
+#
+# Open:
+#   Agent Zero  http://100.118.230.116:50080
+#   Kali noVNC  https://100.118.230.116:6901   (kasm_user / password — change VNC_PW)
+
+name: hermes-labs
+
+services:
+  agent-zero:
+    container_name: agent-zero
+    image: agent0ai/agent-zero:latest
+    restart: unless-stopped
+    ports:
+      - "50080:80"
+    volumes:
+      - /opt/agent-zero/usr:/a0/usr
+    # Kali-based Agent Zero (Hacking Edition) instead of the default image:
+    # image: frdel/agent-zero-run:hacking
+
+  kali-novnc:
+    container_name: kali-novnc
+    image: kasmweb/kali-rolling-desktop:1.17.0
+    restart: unless-stopped
+    shm_size: 512m
+    ports:
+      - "6901:6901"
+    environment:
+      VNC_PW: password

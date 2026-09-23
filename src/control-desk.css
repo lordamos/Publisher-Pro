@@ -1,0 +1,282 @@
+:root {
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  min-height: 100%;
+  height: 100%;
+  background: #080c12;
+  color: #eaf1f8;
+  font-family: "Segoe UI", Inter, ui-sans-serif, system-ui, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+.hcd {
+  min-width: 980px;
+  min-height: 680px;
+  height: 100%;
+  padding: 18px;
+  display: grid;
+  grid-template-rows: auto auto minmax(220px, 1fr) 230px;
+  background: #080c12;
+  color: #eaf1f8;
+}
+
+.hcd.is-busy {
+  cursor: wait;
+}
+
+.hcd-header {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 16px;
+  margin-bottom: 16px;
+  align-items: center;
+}
+
+.hcd-title {
+  margin: 0;
+  font-size: 30px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: #62dfff;
+}
+
+.hcd-subtitle {
+  margin: 3px 0 0;
+  color: #8092a7;
+  font-size: 14px;
+}
+
+.hcd-target {
+  display: flex;
+  align-items: center;
+  gap: 0;
+}
+
+.hcd-at {
+  margin: 0 6px;
+  color: #eaf1f8;
+}
+
+.hcd-input {
+  background: #0c1420;
+  color: #eaf2fa;
+  border: 1px solid #314257;
+  padding: 8px;
+  font-family: Consolas, "Cascadia Mono", "JetBrains Mono", ui-monospace, monospace;
+  font-size: 13px;
+}
+
+.hcd-input.user {
+  width: 80px;
+}
+
+.hcd-input.host {
+  width: 160px;
+}
+
+.hcd-btn {
+  background: #172131;
+  color: #eaf2fa;
+  border: 1px solid #314257;
+  padding: 9px 14px;
+  margin: 4px;
+  font-size: 13px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.hcd-btn:hover:not(:disabled) {
+  background: #1e2c41;
+}
+
+.hcd-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.hcd-btn.danger {
+  background: #3d1920;
+  border-color: #7f2f3c;
+}
+
+.hcd-btn.danger:hover:not(:disabled) {
+  background: #4a1e27;
+}
+
+.hcd-btn.small {
+  padding: 2px 7px;
+  font-size: 11px;
+  margin: 0;
+}
+
+.hcd-status-block {
+  margin-bottom: 14px;
+}
+
+.hcd-status {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+}
+
+.hcd-card {
+  background: #101823;
+  border: 1px solid #26374a;
+  border-radius: 6px;
+  margin: 4px;
+  padding: 14px;
+}
+
+.hcd-card-label {
+  color: #8192a5;
+  font-size: 13px;
+}
+
+.hcd-card-value {
+  margin: 5px 0 0;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.hcd-card-value.unknown {
+  color: #eaf1f8;
+}
+
+.hcd-card-value.online {
+  color: #52e59a;
+}
+
+.hcd-card-value.offline {
+  color: #ff6179;
+}
+
+.hcd-card-port {
+  color: #566579;
+  font-size: 13px;
+  margin-top: 2px;
+}
+
+.hcd-tabs {
+  background: #0b111a;
+  border: 1px solid #26374a;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.hcd-tab-list {
+  display: flex;
+  border-bottom: 1px solid #26374a;
+}
+
+.hcd-tab {
+  background: #101823;
+  color: #dce7f2;
+  border: 0;
+  border-right: 1px solid #26374a;
+  padding: 8px 18px;
+  font-size: 13px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.hcd-tab.active {
+  background: #162233;
+  color: #62dfff;
+  box-shadow: inset 0 -2px 0 #62dfff;
+}
+
+.hcd-tab-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.hcd-panel {
+  padding: 14px 16px;
+}
+
+.hcd-section-title {
+  font-size: 18px;
+  font-weight: 700;
+  margin: 4px 4px 8px;
+}
+
+.hcd-section-title.spaced {
+  margin-top: 18px;
+}
+
+.hcd-help {
+  color: #73869a;
+  margin: 4px 0 10px;
+  font-size: 13px;
+}
+
+.hcd-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.hcd-console-wrap {
+  margin-top: 14px;
+  background: #04080d;
+  border: 1px solid #26374a;
+  border-radius: 5px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.hcd-console-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 7px 10px;
+}
+
+.hcd-console-label {
+  color: #687d94;
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.hcd-output {
+  flex: 1;
+  min-height: 0;
+  border: 0;
+  resize: none;
+  background: #04080d;
+  color: #9fdcad;
+  font-family: Consolas, "Cascadia Mono", "JetBrains Mono", ui-monospace, monospace;
+  font-size: 12px;
+  padding: 10px;
+  outline: none;
+}
+
+.hcd-raw {
+  width: 100%;
+  min-height: 160px;
+  height: calc(100% - 90px);
+  background: #0c1420;
+  color: #eaf2fa;
+  border: 1px solid #314257;
+  padding: 8px;
+  font-family: Consolas, "Cascadia Mono", "JetBrains Mono", ui-monospace, monospace;
+  font-size: 13px;
+  resize: none;
+}
+
+.hcd-console-grid {
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  min-height: 280px;
+  height: 100%;
+}
